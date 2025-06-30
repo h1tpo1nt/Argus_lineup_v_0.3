@@ -60,6 +60,8 @@ def parse_date(date_str):
             return ""
     return ""
 
+# =================================
+
 # ======================================
 # Парсинг таблицы Indian imports
 # ======================================
@@ -108,22 +110,29 @@ for i, row in df.iterrows():
         if vol_origin:
             vol_match = re.match(r'^([\d,]+)\s*(.*)$', vol_origin)
             if vol_match:
-                volume = vol_match.group(1)
+                volume = vol_match.group(1).replace(',', '')
                 origin = vol_match.group(2).strip()
             else:
                 origin = vol_origin
 
-        # Парсим Date и Discharge port с использованием новой функции
+        # Парсим Date и Discharge port
         date_str = parse_date(date_port)
         discharge_port = ""
         if date_port:
-            # Удаем дату из строки, чтобы получить порт
+            # Полностью очищаем строку от цифр, тире и месяцев
             discharge_port = re.sub(
-                r'\d{1,2}[a-zA-Z]*\s*[A-Za-z]{3,9}|'
-                r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b|'
-                r'\b(mid|early|end)\b',
+                r'\d{1,2}\s*-*\s*|'  # Удаляем цифры и тире перед ними
+                r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\b|'
+                r'\b(mid|early|end)\b|'
+                r'\bjune\b|\bjuly\b|\baugust\b|\bseptember\b|\boctober\b|\bnovember\b|\bdecember\b',
                 '', date_port, flags=re.IGNORECASE
             ).strip()
+            # Удаляем оставшиеся тире и пробелы
+            discharge_port = re.sub(r'^-+\s*|\s*-+\s*$', '', discharge_port).strip()
+            # Удаляем все цифры, если остались
+            discharge_port = re.sub(r'\d+', '', discharge_port).strip()
+            # Окончательная очистка
+            discharge_port = discharge_port.lstrip('-').strip()
 
         # Цена — только числа
         price_clean = ""
@@ -140,7 +149,7 @@ for i, row in df.iterrows():
             "Vessel": vessel,
             "Volume (t)": volume,
             "Origin": origin,
-            "Date": date_str,
+            "Date of arrival": date_str,
             "Discharge port": discharge_port,
             "Price": price_clean,
             "Incoterm": "",
@@ -173,6 +182,7 @@ for i, row in df.iterrows():
     if start_parsing_spot and any(keyword in first_cell.lower() for keyword in ['copyright', 'лицензия']):
         print("Найдена строка 'Copyright' — завершаем парсинг Spot Sales")
         break
+
 
     # Парсим данные для Spot Sales (ТОЛЬКО ЕСЛИ ДОСТАТОЧНО КОЛОНОК)
     if start_parsing_spot and first_cell and len(row) > 6:
@@ -210,6 +220,9 @@ for i, row in df.iterrows():
             if incoterm_match:
                 incoterm = incoterm_match.group().upper()
 
+        # Обрабатываем Origin - берем только часть до / или -
+        origin_processed = origin_value.split('/')[0].split('-')[0].strip()
+
         # Добавляем в результат
         final_data.append({
             "Agency": agency,
@@ -218,20 +231,21 @@ for i, row in df.iterrows():
             "Buyer": buyer,
             "Vessel": "",
             "Volume (t)": volume,
-            "Origin": origin_value,
-            "Date": date_str,
+            "Origin": origin_processed,  # Используем обработанное значение
+            "Date of arrival": date_str,
             "Discharge port": "",
             "Price": price_clean,
             "Incoterm": incoterm,
             "Destination": destination_val
         })
 
+
 # ======================================
 # Создаём DataFrame и сохраняем результат
 # ======================================
 columns_order = [
     "Agency", "Product", "Seller", "Buyer", "Vessel",
-    "Volume (t)", "Origin", "Date", "Discharge port", "Price", "Incoterm", "Destination"
+    "Volume (t)", "Origin", "Date of arrival", "Discharge port", "Price", "Incoterm", "Destination"
 ]
 result_df = pd.DataFrame(final_data, columns=columns_order)
 
