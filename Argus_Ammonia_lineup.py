@@ -1,155 +1,92 @@
 import pandas as pd
-from datetime import datetime
 import re
+from datetime import datetime
+import os
 
 # ======================================
 # Настройки путей и параметров
 # ======================================
-file_path = 'your_file.xlsx'
+file_path = 'IFFCO Ammonia.xlsx'  # заменить на свой путь
+file_name = os.path.basename(file_path).replace('.xlsx', '')
+
+# Извлекаем Agency и Product из названия файла
+file_parts = file_name.split()
+agency = file_parts[0]
+product = ' '.join(file_parts[1:]) if len(file_parts) > 1 else ''
 
 # Загружаем данные
-df = pd.read_excel(file_path, header=None)
+df = pd.read_excel(file_path)
 
-# Результат будет собираться здесь
-result_rows = []
+# Проверяем, что нужные столбцы присутствуют
+required_columns = ['Seller', 'Buyer', 'Vessel', 'Volume (t) Origin', 'Date Discharge port', 'Price']
+if not all(col in df.columns for col in required_columns):
+    raise ValueError("Не найдены необходимые колонки в файле")
 
-# Поиск начала таблицы "Ammonia prices"
-start_row = None
-dates = []
-incoterm_section = None  # fob или cfr
+# Новый список строк
+processed_data = []
 
-for i, row in df.iterrows():
-    cell_value = str(row[0]).strip()
+for _, row in df.iterrows():
+    # Парсим "Volume (t) Origin"
+    vol_origin = str(row['Volume (t) Origin']).strip()
+    vol_match = re.match(r'^([\d,]+)\s*(.*)$', vol_origin)
+    volume = vol_match.group(1) if vol_match else ""
+    origin = vol_match.group(2).strip() if vol_match else vol_origin
 
-    # Начало таблицы
-    if cell_value.lower() == "ammonia prices":
-        start_row = i + 1
-        continue
+    # Парсим "Date Discharge port"
+    date_port = str(row['Date Discharge port']).strip()
+    date_match = re.search(r'(\d{1,2})\s*[-\s]*([A-Za-z]{3,9})', date_port, re.IGNORECASE)
+    discharge_port = date_port
+    date_str = ""
 
-    if start_row is None:
-        continue
+    if date_match:
+        day = date_match.group(1)
+        month_abbr = date_match.group(2).capitalize()
+        try:
+            dt = datetime.strptime(f"{day} {month_abbr[:3]}", "%d %b")
+            date_str = dt.strftime("%d.%m")
+            discharge_port = re.sub(r'\d{1,2}\s+[A-Za-z]{3,9}', '', date_port, flags=re.IGNORECASE).strip()
+        except ValueError:
+            pass
 
-    # Если дошли до конца файла
-    if i >= len(df):
-        break
+    # Если даты нет, но есть слово вроде "mid July"
+    if not date_str:
+        month_match = re.search(r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)', date_port.lower())
+        if month_match:
+            month_num = month_match.start() // 3 + 1
+            date_str = f"15.{month_num:02d}"
+            discharge_port = re.sub(r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)',
+                                    '', date_port, flags=re.IGNORECASE).strip()
 
-    # Ищем даты выше слова "fob"
-    if cell_value.lower() == "fob":
-        incoterm_section = "FOB"
-        continue
+    # Цена — только число
+    price = ""
+    price_match = re.search(r'([\d\.]+)', str(row['Price']))
+    if price_match:
+        price = price_match.group(1)
 
-    if cell_value.lower() == "cfr":
-        incoterm_section = "CFR"
-        continue
+    # Добавляем обработанную строку
+    processed_data.append({
+        "Agency": agency,
+        "Product": product,
+        "Seller": row['Seller'],
+        "Buyer": row['Buyer'],
+        "Vessel": row['Vessel'],
+        "Volume (t)": volume,
+        "Origin": origin,
+        "Date": date_str,
+        "Discharge port": discharge_port,
+        "Price": price
+    })
 
-    # Если еще не нашли даты, ищем их
-    if not dates and incoterm_section is None:
-        match = re.search(r'(\d{1,2})\s([A-Za-z]{3})', cell_value)
-        if match:
-            day = match.group(1)
-            month_abbr = match.group(2).capitalize()
-            try:
-                date_str = f"{day} {month_abbr}"
-                parsed_date = datetime.strptime(date_str, "%d %b").strftime("%d.%m")
-                dates.append(parsed_date)
-            except ValueError:
-                pass
+# Создаём DataFrame
+columns_order = [
+    "Agency", "Product", "Seller", "Buyer", "Vessel",
+    "Volume (t)", "Origin", "Date", "Discharge port", "Price"
+]
 
-    # Теперь начинаем парсить данные под FOB или CFR
-    if incoterm_section:
-        location = cell_value
-        low_high = str(row[1]).strip() if 1 < len(row) else ""
-        mid = str(row[2]).strip() if 2 < len(row) else ""
-
-        # Чистка значений
-        def clean_value(val):
-            val = val.lower()
-            if val in ["-", "na", "n/a"]:
-                return ""
-            return val
-
-        low_high = clean_value(low_high)
-        mid = clean_value(mid)
-
-        # Классификация Incoterms
-        incoterm = ""
-        if incoterm_section == "FOB":
-            if location in [
-                "Baltic",
-                "Pivdenny",
-                "North Africa",
-                "Middle East",
-                "Middle East spot",
-                "Middle East contract",
-                "US Gulf domestic (barge) $/st",
-                "Caribbean",
-                "US Gulf",
-                "SE Asia and Australia",
-                "SE Asia and Australia spot",
-                "SE Asia and Australia contract"
-            ]:
-                incoterm = "FOB"
-
-        elif incoterm_section == "CFR":
-            if location in [
-                "NW Europe (duty unpaid)",
-                "NW Europe (duty paid/free)",
-                "NW Europe weekly indext Turkey Morocco India India spot India contract East Asia (excl Taiwan)",
-                "East Asia (excl Taiwan) spot",
-                "East Asia (excl Taiwan) contract",
-                "Taiwan",
-                "China",
-                "ex-works Jiangsu Yn/t",
-                "Tampa",
-                "US Gulf"
-            ]:
-                incoterm = "CFR"
-
-            elif location in [
-                "NW Europe Plus Carbon-Price Adjustment (assumes no free credits)",
-                "NW Europe Plus Carbon-Price Adjustment (assumes free credits)"
-            ]:
-                incoterm = "Carbon-Adjusted Price of Ammonia (CAPA)"
-
-            elif location in [
-                "Ammonia low-C cfr Ulsan (JKLAB) excl US 45Qtax credit",
-                "Ammonia low-C cfr Ulsan (JKLAB) inc US 45Qtax credit",
-                "Gas carrier ammonia Niihama (Ulsan basis) diff to cfr Ulsan"
-            ]:
-                incoterm = "JKLAB"
-
-            elif location in [
-                "Henry hub $/mn Btu",
-                "TTF month ahead $/mn Btu",
-                "Ammonia cost of production (TTF)"
-            ]:
-                incoterm = "Natural gas"
-
-        # Добавляем строку только если есть что-то кроме пустых значений
-        if location or low_high or mid or incoterm:
-            result_rows.append({
-                "Location": location,
-                "Low-High": low_high,
-                "Mid": mid,
-                "Incoterms": incoterm
-            })
-
-# Создаем результирующий DataFrame
-result_df = pd.DataFrame(result_rows)
-
-# Добавляем шапку с датами
-if len(dates) >= 2:
-    result_df.columns = pd.MultiIndex.from_tuples([
-        ("", "Location"),
-        (dates[0], "Low-High"),
-        (dates[0], "Mid"),
-        (dates[1], "Low-High"),
-        (dates[1], "Mid"),
-        ("", "Incoterms")
-    ])
+result_df = pd.DataFrame(processed_data, columns=columns_order)
 
 # Сохраняем результат
-output_path = "processed_ammonia_prices.xlsx"
-result_df.to_excel(output_path, index=False, header=True)
+output_file = 'processed_Indian_imports.xlsx'
+result_df.to_excel(output_file, index=False)
 
-print(f"Файл успешно обработан и сохранен как {output_path}")
+print(f"Файл успешно обработан и сохранён как '{output_file}'")
