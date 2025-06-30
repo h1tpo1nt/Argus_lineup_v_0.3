@@ -2,7 +2,9 @@ import pandas as pd
 from datetime import datetime
 import re
 
-# Путь к файлу
+# ======================================
+# Настройки путей и параметров
+# ======================================
 file_path = 'your_file.xlsx'
 
 # Загружаем данные
