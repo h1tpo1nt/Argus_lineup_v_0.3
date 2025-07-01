@@ -81,40 +81,41 @@ def process_prices(price_str):
 
 
 # ======================================
-# Проверка на выбросы (цена > 2× от среднего) с указанием номера строки в Excel
+# Проверка на выбросы (цена > 2× от среднего) с указанием номера строки в Excel и файла
 # ======================================
-def check_price_outliers(data_with_rows):
+def check_price_outliers(data_with_rows, filename):
     """
-    Проверяет аномальные цены и возвращает предупреждения с реальными номерами строк.
-    
-    :param data_with_rows: Список кортежей (excel_row_number, price)
-    :return: Список сообщений о подозрительных ценах
+    Проверяет аномальные цены и возвращает словарь {index_in_final_data: warning_message}.
+    :param data_with_rows: Список кортежей (excel_row_number, price, index_in_final_data)
+    :param filename: Имя файла для указания источника
+    :return: dict
     """
     if not data_with_rows:
-        return []
+        return {}
 
     prices = []
     valid_data = []
 
-    for row_num, price in data_with_rows:
+    for row_num, price, idx in data_with_rows:
         try:
             price_int = int(price)
             prices.append(price_int)
-            valid_data.append((row_num, price_int))
+            valid_data.append((row_num, price_int, idx))
         except (ValueError, TypeError):
             print(f"[WARNING] Неверная цена '{price}' в строке {row_num} → пропущено")
 
     if not valid_data:
-        return []
+        return {}
 
     avg = sum(prices) / len(prices)
-    warnings = []
+    warnings_dict = {}
 
-    for row_number, price in valid_data:
+    for row_number, price, idx in valid_data:
         if avg != 0 and price > 2 * avg:
-            warnings.append(f"🟥🟥🟥🟥🟥 Проверьте цену в строке - {row_number}")
+            warning_msg = f"🟥 Проверьте цену в строке - {row_number} ({filename})"
+            warnings_dict[idx] = warning_msg
 
-    return warnings
+    return warnings_dict
 
 
 # ======================================
@@ -136,7 +137,7 @@ final_data = []
 # ======================================
 # Парсинг Indian imports
 # ======================================
-def parse_indian_imports(df, final_data, agency, product, publish_date):
+def parse_indian_imports(df, final_data, agency, product, publish_date, file_name_short):
     start_parsing = False
     price_data = []
     print("[INFO] Начинаем парсить Indian imports...")
@@ -181,8 +182,9 @@ def parse_indian_imports(df, final_data, agency, product, publish_date):
                 discharge_port = re.sub(r'\d+', '', discharge_port).strip()
                 discharge_port = discharge_port.lstrip('-').strip()
             price_info = process_prices(price)
+            final_index = len(final_data)
             if price_info["Average"]:
-                price_data.append((i + 1, int(price_info["Average"])))  # i+2 — это номер строки в Excel
+                price_data.append((i + 1, int(price_info["Average"]), final_index))
             final_data.append({
                 "Publish Date": publish_date,
                 "Agency": agency,
@@ -201,15 +203,15 @@ def parse_indian_imports(df, final_data, agency, product, publish_date):
                 "Destination": "",
                 "Grade": "",
             })
-    warnings = check_price_outliers(price_data)
-    for msg in warnings:
-        print(f"[WARNING] {msg}")
+    price_warnings = check_price_outliers(price_data, file_name_short)
+    for idx, msg in price_warnings.items():
+        final_data[idx]["Average"] = msg
 
 
 # ======================================
 # Парсинг Spot Sales
 # ======================================
-def parse_spot_sales(df, final_data, agency, product, publish_date):
+def parse_spot_sales(df, final_data, agency, product, publish_date, file_name_short):
     start_parsing = False
     price_data = []
     print("[INFO] Переходим к парсингу Spot Sales...")
@@ -239,8 +241,9 @@ def parse_spot_sales(df, final_data, agency, product, publish_date):
                 if vol_match:
                     volume = vol_match.group(1).replace(',', '')
             price_info = process_prices(price_incoterm)
+            final_index = len(final_data)
             if price_info["Average"]:
-                price_data.append((i + 1, int(price_info["Average"])))
+                price_data.append((i + 1, int(price_info["Average"]), final_index))
             incoterm = ""
             incoterm_match = re.search(
                 r'(fob|cfr|cif|fca|dap|cpt|c\w+?r|rail|exw|ddp|dpu|d\w+?p|f\w+?t|c\w+?y)',
@@ -268,15 +271,15 @@ def parse_spot_sales(df, final_data, agency, product, publish_date):
                 "Destination": destination_val,
                 "Grade": "",
             })
-    warnings = check_price_outliers(price_data)
-    for msg in warnings:
-        print(f"[WARNING] {msg}")
+    price_warnings = check_price_outliers(price_data, file_name_short)
+    for idx, msg in price_warnings.items():
+        final_data[idx]["Average"] = msg
 
 
 # ======================================
 # Парсинг Recent spot sales
 # ======================================
-def parse_recent_spot_sales(df, final_data, agency, product, publish_date):
+def parse_recent_spot_sales(df, final_data, agency, product, publish_date, file_name_short):
     start_parsing = False
     price_data = []
     print("[INFO] Переходим к парсингу Recent spot sales...")
@@ -302,7 +305,6 @@ def parse_recent_spot_sales(df, final_data, agency, product, publish_date):
             basis = str(row[7]).strip()
             shipment_period = str(row[9]).strip()
 
-            # --- Обработка Volume ---
             volume_processed = ""
             if volume:
                 try:
@@ -319,22 +321,19 @@ def parse_recent_spot_sales(df, final_data, agency, product, publish_date):
                     print(f"[ERROR] Ошибка при обработке Volume: {ve}")
                     volume_processed = ""
 
-            # --- Обработка Price ---
             price_info = process_prices(price_range)
+            final_index = len(final_data)
             if price_info["Average"]:
-                price_data.append((i + 1, int(price_info["Average"])))
+                price_data.append((i + 1, int(price_info["Average"]), final_index))
 
-            # --- Обработка Shipment period ---
             date_str = ""
             if shipment_period and shipment_period != 'TBC':
                 shipment_lower = shipment_period.strip().lower()
-                # Попробуем найти точное совпадение по полному названию месяца
                 for month in full_month_names:
                     if shipment_lower == month.lower():
                         month_index = full_month_names.index(month) + 1
                         date_str = f"01.{month_index:02d}"
                         break
-                # Если не нашли — проверим по первым 3 буквам
                 if not date_str:
                     for month in full_month_names:
                         if shipment_lower == month[:3].lower():
@@ -360,15 +359,15 @@ def parse_recent_spot_sales(df, final_data, agency, product, publish_date):
                 "Destination": destination,
                 "Grade": product_grade
             })
-    warnings = check_price_outliers(price_data)
-    for msg in warnings:
-        print(f"[WARNING] {msg}")
+    price_warnings = check_price_outliers(price_data, file_name_short)
+    for idx, msg in price_warnings.items():
+        final_data[idx]["Average"] = msg
 
 
 # ======================================
 # Парсинг Indian NPK arrivals
 # ======================================
-def parse_indian_npk_arrivals(df, final_data, agency, product, publish_date):
+def parse_indian_npk_arrivals(df, final_data, agency, product, publish_date, file_name_short):
     start_parsing = False
     price_data = []
     print("[INFO] Переходим к парсингу Indian NPK arrivals...")
@@ -398,7 +397,7 @@ def parse_indian_npk_arrivals(df, final_data, agency, product, publish_date):
             vol_loading = str(row[4]).strip()
             discharge_port = str(row[5]).strip()
             arrival = str(row[6]).strip() if len(row) > 6 else ""
-            # --- Обработка Volume и Loading port ---
+
             volume_clean = ""
             loading_port = ""
             if vol_loading:
@@ -408,10 +407,13 @@ def parse_indian_npk_arrivals(df, final_data, agency, product, publish_date):
                     loading_port = vol_match.group(2).strip()
                 else:
                     loading_port = vol_loading.strip()
+
             date_str = parse_date(arrival)
             price_info = process_prices("")
+            final_index = len(final_data)
             if price_info["Average"]:
-                price_data.append((i + 1, int(price_info["Average"])))
+                price_data.append((i + 1, int(price_info["Average"]), final_index))
+
             final_data.append({
                 "Publish Date": publish_date,
                 "Agency": agency,
@@ -431,9 +433,9 @@ def parse_indian_npk_arrivals(df, final_data, agency, product, publish_date):
                 "Grade": grade,
                 "Loading port": loading_port
             })
-    warnings = check_price_outliers(price_data)
-    for msg in warnings:
-        print(f"[WARNING] {msg}")
+    price_warnings = check_price_outliers(price_data, file_name_short)
+    for idx, msg in price_warnings.items():
+        final_data[idx]["Average"] = msg
 
 
 # ======================================
@@ -444,22 +446,23 @@ for file_info in FILES:
     tables_to_parse = file_info["tables"]
     print(f"[INFO] Загружаем файл: {file_path}")
     df = pd.read_excel(file_path, header=None)
-    # Извлекаем Agency и Product из названия файла
+
     file_name = os.path.basename(file_path).replace('.xlsx', '')
     file_parts = file_name.split('_')
     agency = file_parts[0].strip()
     product = ' '.join(file_parts[1:]).split(' ')[0].strip() if len(file_parts) > 1 else ''
-    # Извлекаем дату публикации
+
     publish_date = extract_publish_date(file_name)
-    # Парсим нужные таблицы
+    file_name_short = os.path.basename(file_path)
+
     if "Indian imports" in tables_to_parse:
-        parse_indian_imports(df, final_data, agency, product, publish_date)
+        parse_indian_imports(df, final_data, agency, product, publish_date, file_name_short)
     if "Spot Sales" in tables_to_parse:
-        parse_spot_sales(df, final_data, agency, product, publish_date)
+        parse_spot_sales(df, final_data, agency, product, publish_date, file_name_short)
     if "Recent spot sales" in tables_to_parse:
-        parse_recent_spot_sales(df, final_data, agency, product, publish_date)
+        parse_recent_spot_sales(df, final_data, agency, product, publish_date, file_name_short)
     if "Indian NPK arrivals" in tables_to_parse:
-        parse_indian_npk_arrivals(df, final_data, agency, product, publish_date)
+        parse_indian_npk_arrivals(df, final_data, agency, product, publish_date, file_name_short)
 
 
 # ======================================
@@ -470,6 +473,7 @@ columns_order = [
     "Volume (t)", "Origin", "Date of arrival", "Discharge port",
     "Low", "High", "Average", "Incoterm", "Destination", "Grade", "Loading port"
 ]
+
 result_df = pd.DataFrame(final_data, columns=columns_order)
 output_file = 'processed_final_output.xlsx'
 result_df.to_excel(output_file, index=False)
