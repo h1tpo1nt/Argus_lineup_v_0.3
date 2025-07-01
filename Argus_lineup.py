@@ -3,6 +3,20 @@ import re
 from datetime import datetime
 import os
 
+# ======================================
+# Настройки путей и параметров
+# ======================================
+FILES = [
+    {
+        "path": "/content/Argus Ammonia _ Russia version (2025-06-12).xlsx",
+        "tables": ["Indian imports", "Spot Sales", "Recent spot sales", "Indian NPK arrivals"]
+    }
+]
+full_month_names = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+]
+final_data = []
 
 # ======================================
 # Функция извлечения даты из имени файла
@@ -117,23 +131,6 @@ def check_price_outliers(data_with_rows, filename):
 
     return warnings_dict
 
-
-# ======================================
-# Настройки путей и параметров
-# ======================================
-FILES = [
-    {
-        "path": "/content/Argus Ammonia _ Russia version (2025-06-12).xlsx",
-        "tables": ["Indian imports", "Spot Sales", "Recent spot sales", "Indian NPK arrivals"]
-    }
-]
-full_month_names = [
-    'January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December'
-]
-final_data = []
-
-
 # ======================================
 # Парсинг Indian imports
 # ======================================
@@ -234,6 +231,7 @@ def parse_spot_sales(df, final_data, agency, product, publish_date, file_name_sh
             tonnes = str(row[4]).strip() if not pd.isna(row[4]) else ""
             price_incoterm = str(row[5]).strip() if not pd.isna(row[5]) else ""
             origin_value = str(row[6]).strip() if not pd.isna(row[6]) else ""
+            origin_processed = origin_value.strip()  # Полное значение без обработки
             date_str = parse_date(shipment)
             volume = ""
             if tonnes:
@@ -252,7 +250,7 @@ def parse_spot_sales(df, final_data, agency, product, publish_date, file_name_sh
             )
             if incoterm_match:
                 incoterm = incoterm_match.group().upper()
-            origin_processed = origin_value.split('/')[0].split('-')[0].strip()
+            origin_processed = origin_value.strip()
             final_data.append({
                 "Publish Date": publish_date,
                 "Agency": agency,
