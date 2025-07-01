@@ -154,7 +154,8 @@ for i, row in df.iterrows():
             "Price": price_clean,
             "Incoterm": "",
             "Destination": "",
-            "Grade": "" 
+            "Grade": "",
+            "Loading port": ""
         })
 
 # ======================================
@@ -238,7 +239,8 @@ for i, row in df.iterrows():
             "Price": price_clean,
             "Incoterm": incoterm,
             "Destination": destination_val,
-            "Grade": ""  
+            "Grade": "",
+            "Loading port": ""
         })
 
 # ======================================
@@ -259,11 +261,9 @@ for i, row in df.iterrows():
     # Поиск начала таблицы
     if re.search(r'recent\s*spot\s*sales', first_cell, re.IGNORECASE):
         start_parsing_recent = True
-        print(f"[DEBUG] Начало таблицы Recent spot sales на строке {i}")
         continue
 
     if start_parsing_recent and first_cell == "Supplier":
-        print(f"[DEBUG] Пропускаем заголовок на строке {i}")
         continue
 
     if start_parsing_recent and any(keyword in first_cell.lower() for keyword in ['copyright', 'лицензия']):
@@ -288,8 +288,6 @@ for i, row in df.iterrows():
             price_range = str(row[6]).strip()
             basis = str(row[7]).strip()
             shipment_period = str(row[9]).strip()
-
-            print(f"[DEBUG] Обработка строки {i}: {supplier}, {buyer}, {shipment_period}")
 
             # --- Обработка Volume ---
             volume_processed = ""
@@ -344,7 +342,88 @@ for i, row in df.iterrows():
                 "Price": price_clean,
                 "Incoterm": basis.upper(),
                 "Destination": destination,
-                "Grade": product_grade
+                "Grade": product_grade,
+                "Loading port": ""
+            })
+
+        except Exception as e:
+            print(f"[ERROR] Ошибка при обработке строки {i}: {e}")
+            continue
+
+# ======================================
+# Парсинг таблицы Indian NPK arrivals
+# ======================================
+start_parsing_npk = False
+print("[INFO] Переходим к парсингу Indian NPK arrivals...")
+
+for i, row in df.iterrows():
+    first_cell = str(row[0]).strip() if not pd.isna(row[0]) else ""
+    if not first_cell:
+        continue
+
+    # Поиск начала таблицы
+    if re.search(r'indian\s*npk\s*arrivals', first_cell, re.IGNORECASE):
+        start_parsing_npk = True
+        continue
+
+    # Пропускаем заголовок
+    if start_parsing_npk and first_cell == "Supplier":
+        continue
+
+    # Останавливаем парсинг при встрече строки 'Grand Total'
+    if start_parsing_npk and re.search(r'^grand\s+total', first_cell, re.IGNORECASE):
+        print(f"[INFO] Найдена строка 'Grand Total' — завершаем парсинг Indian NPK arrivals")
+        break
+
+    # Пропускаем строку 'Total'
+    if start_parsing_npk and first_cell.lower() == "total":
+        print(f"[DEBUG] Пропускаем строку 'Total' (Indian NPK arrivals) на строке {i}")
+        continue
+
+    # Основной парсинг
+    if start_parsing_npk and first_cell:
+        try:
+            # Проверяем, что колонок достаточно (минимум 6)
+            if len(row) < 6:
+                print(f"[WARNING] Строка {i} содержит меньше 6 колонок → пропускаем.")
+                continue
+
+            supplier = str(row[0]).strip()
+            buyer = str(row[1]).strip()
+            vessel = str(row[2]).strip()
+            grade = str(row[3]).strip()
+            vol_loading = str(row[4]).strip()
+            discharge_port = str(row[5]).strip()
+            arrival = str(row[6]).strip() if len(row) > 6 else ""
+
+            # Обработка Volume и Loading port
+            volume_clean = ""
+            loading_port = ""
+            if vol_loading:
+                vol_match = re.match(r'^([\d,]+)\s*(.*)$', vol_loading)
+                if vol_match:
+                    volume_clean = vol_match.group(1).replace(',', '').replace('.', '')
+                    loading_port = vol_match.group(2).strip()
+                else:
+                    loading_port = vol_loading.strip()
+
+            date_str = parse_date(arrival)
+
+            final_data.append({
+                "Agency": agency,
+                "Product": product,
+                "Seller": "",
+                "Buyer": buyer,
+                "Vessel": vessel,
+                "Volume (t)": volume_clean,
+                "Origin": supplier,
+                "Date of arrival": date_str,
+                "Discharge port": discharge_port,
+                "Price": "",
+                "Incoterm": "",
+                "Destination": "",
+                "Grade": grade,
+                "Loading port": loading_port
             })
 
         except Exception as e:
@@ -355,7 +434,7 @@ for i, row in df.iterrows():
 # ======================================
 columns_order = [
     "Agency", "Product", "Seller", "Buyer", "Vessel",
-    "Volume (t)", "Origin", "Date of arrival", "Discharge port", "Price", "Incoterm", "Destination", "Grade"
+    "Volume (t)", "Origin", "Date of arrival", "Discharge port", "Price", "Incoterm", "Destination", "Grade", "Loading port"
 ]
 result_df = pd.DataFrame(final_data, columns=columns_order)
 
