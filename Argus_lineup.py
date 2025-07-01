@@ -3,54 +3,54 @@ import re
 from datetime import datetime
 import os
 
+
 # ======================================
-# Настройки путей и параметров
+# Функция извлечения даты из имени файла
 # ======================================
-file_path = '/content/Argus_Ammonia_test.xlsx'  # заменить на свой путь
-file_name = os.path.basename(file_path).replace('.xlsx', '')
+def extract_publish_date(filename):
+    date_patterns = [
+        # Формат с круглыми скобками: (2025-06-12)
+        (r'(\d{4}-\d{2}-\d{2})', "%Y-%m-%d"),
+        # Формат: 2025-06-11
+        (r'(\d{4}-\d{2}-\d{2})', "%Y-%m-%d"),
+        # Формат: 12-Jun-2025
+        (r'(\d{1,2}-[a-zA-Z]{3,9}-\d{4})', "%d-%b-%Y"),
+        # Формат: 12Jun2025
+        (r'(\d{1,2}[a-zA-Z]{3,9}\d{4})', "%d%b%Y")
+    ]
+    for pattern, fmt in date_patterns:
+        match = re.search(pattern, filename, re.IGNORECASE)
+        if match:
+            try:
+                date_str = match.group(1)
+                dt = datetime.strptime(date_str, fmt)
+                return dt.strftime("%d.%m.%Y")
+            except Exception as e:
+                print(f"[WARNING] Не удалось распознать дату из '{filename}': {e}")
+                continue
+    print(f"[WARNING] Нет даты в названии файла: '{filename}'")
+    return ""
 
-# Извлекаем Agency и Product из названия файла
-file_parts = file_name.split('_')
-agency = file_parts[0].strip()
-product = ' '.join(file_parts[1:]).split(' ')[0].strip() if len(file_parts) > 1 else ''
 
-# Загружаем данные без заголовков
-df = pd.read_excel(file_path, header=None)
-
-# Результат будем собирать здесь
-final_data = []
-
+# ======================================
+# Парсинг даты по правилам
+# ======================================
 def parse_date(date_str):
-    """
-    Парсит дату по новым правилам:
-    - Если просто месяц: 1 число месяца
-    - Если mid/early: 15 число
-    - Если end: 30 число
-    - Если указан конкретный день: используем его
-    """
     if not date_str:
         return ""
-    
-    # Приводим к нижнему регистру для удобства
     date_str_lower = date_str.lower()
-    
-    # Определяем день месяца по ключевым словам
     if re.search(r'\bmid\b|\bearly\b|\bme?i?d\b|\bear?ly\b', date_str_lower):
         day = 15
     elif re.search(r'\bend\b|\ben?d\b', date_str_lower):
         day = 30
     else:
-        # Ищем конкретный день
         day_match = re.search(r'\b(\d{1,2})\b', date_str)
-        day = int(day_match.group(1)) if day_match else 1  # По умолчанию 1 число
-    
-    # Ищем месяц
+        day = int(day_match.group(1)) if day_match else 1
     month_match = re.search(
         r'\b(jan|january|feb|february|mar|march|apr|april|may|jun|june|'
         r'jul|july|aug|august|sep|september|oct|october|nov|november|dec|december)\b',
         date_str_lower
     )
-    
     if month_match:
         month_str = month_match.group(1)[:3].capitalize()
         try:
@@ -60,160 +60,188 @@ def parse_date(date_str):
             return ""
     return ""
 
-# =================================
 
 # ======================================
-# Парсинг таблицы Indian imports
+# Обработка цены: Low, High, Average
 # ======================================
-start_parsing_indian = False
-print("[INFO] Начинаем парсить Indian imports...")
+def process_prices(price_str):
+    price_str = re.sub(r'[\s,\–\-\u2013]', ' ', price_str.strip())
+    nums = list(map(int, re.findall(r'\b\d+\b', price_str)))
+    low = ""
+    high = ""
+    avg = ""
+    if len(nums) == 1:
+        avg = str(nums[0])
+    elif len(nums) >= 2:
+        nums.sort()
+        low = str(nums[0])
+        high = str(nums[-1])
+        avg = str(sum(nums[:2]) // 2)
+    return {"Low": low, "High": high, "Average": avg}
 
-for i, row in df.iterrows():
-    first_cell = str(row[0]).strip() if not pd.isna(row[0]) else ""
 
-    # Пропускаем пустые строки
-    if not first_cell:
-        continue
+# ======================================
+# Проверка на выбросы (цена > 2× от среднего) с указанием номера строки в Excel
+# ======================================
+def check_price_outliers(data_with_rows):
+    """
+    Проверяет аномальные цены и возвращает предупреждения с реальными номерами строк.
+    
+    :param data_with_rows: Список кортежей (excel_row_number, price)
+    :return: Список сообщений о подозрительных ценах
+    """
+    if not data_with_rows:
+        return []
 
-    # Если начали парсить и встретили "Copyright" — завершаем парсинг
-    if start_parsing_indian and any(keyword in first_cell.lower() for keyword in ['copyright', 'лицензия']):
-        print("Найдена строка 'Copyright' — завершаем парсинг Indian imports.")
-        break
+    prices = []
+    valid_data = []
 
-    # Нашли "Indian imports"
-    if re.search(r'indian\s*imports', first_cell, re.IGNORECASE):
-        start_parsing_indian = True
-        continue
+    for row_num, price in data_with_rows:
+        try:
+            price_int = int(price)
+            prices.append(price_int)
+            valid_data.append((row_num, price_int))
+        except (ValueError, TypeError):
+            print(f"[WARNING] Неверная цена '{price}' в строке {row_num} → пропущено")
 
-    # Если начали парсить и нашли "Seller" — это заголовок
-    if start_parsing_indian and first_cell == "Seller":
-        continue
+    if not valid_data:
+        return []
 
-    # Пропускаем строки с месяцами
-    if start_parsing_indian:
-        month_match = re.search(r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)', first_cell.lower())
-        if month_match:
+    avg = sum(prices) / len(prices)
+    warnings = []
+
+    for row_number, price in valid_data:
+        if avg != 0 and price > 2 * avg:
+            warnings.append(f"🟥🟥🟥🟥🟥 Проверьте цену в строке - {row_number}")
+
+    return warnings
+
+
+# ======================================
+# Настройки путей и параметров
+# ======================================
+FILES = [
+    {
+        "path": "/content/Argus Ammonia _ Russia version (2025-06-12).xlsx",
+        "tables": ["Indian imports", "Spot Sales", "Recent spot sales", "Indian NPK arrivals"]
+    }
+]
+full_month_names = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+]
+final_data = []
+
+
+# ======================================
+# Парсинг Indian imports
+# ======================================
+def parse_indian_imports(df, final_data, agency, product, publish_date):
+    start_parsing = False
+    price_data = []
+    print("[INFO] Начинаем парсить Indian imports...")
+    for i, row in df.iterrows():
+        first_cell = str(row[0]).strip() if not pd.isna(row[0]) else ""
+        if not first_cell:
             continue
+        if re.search(r'indian\s*imports', first_cell, re.IGNORECASE):
+            start_parsing = True
+            continue
+        if start_parsing and first_cell == "Seller":
+            continue
+        if start_parsing and any(keyword in first_cell.lower() for keyword in ['copyright', 'лицензия']):
+            break
+        if start_parsing and first_cell:
+            seller = first_cell
+            buyer = str(row[1]).strip() if 1 < len(row) and not pd.isna(row[1]) else ""
+            vessel = str(row[2]).strip() if 2 < len(row) and not pd.isna(row[2]) else ""
+            vol_origin = str(row[3]).strip() if 3 < len(row) and not pd.isna(row[3]) else ""
+            date_port = str(row[4]).strip() if 4 < len(row) and not pd.isna(row[4]) else ""
+            price = str(row[5]).strip() if 5 < len(row) and not pd.isna(row[5]) else ""
+            volume = ""
+            origin = ""
+            if vol_origin:
+                vol_match = re.match(r'^([\d,]+)\s*(.*)$', vol_origin)
+                if vol_match:
+                    volume = vol_match.group(1).replace(',', '')
+                    origin = vol_match.group(2).strip()
+                else:
+                    origin = vol_origin
+            date_str = parse_date(date_port)
+            discharge_port = ""
+            if date_port:
+                discharge_port = re.sub(
+                    r'\d{1,2}\s*-*\s*|'
+                    r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\b|'
+                    r'\b(mid|early|end)\b|'
+                    r'\bjune\b|\bjuly\b|\baugust\b|\bseptember\b|\boctober\b|\bnovember\b|\bdecember\b',
+                    '', date_port, flags=re.IGNORECASE
+                ).strip()
+                discharge_port = re.sub(r'^-+\s*|\s*-+\s*$', '', discharge_port).strip()
+                discharge_port = re.sub(r'\d+', '', discharge_port).strip()
+                discharge_port = discharge_port.lstrip('-').strip()
+            price_info = process_prices(price)
+            if price_info["Average"]:
+                price_data.append((i + 1, int(price_info["Average"])))  # i+2 — это номер строки в Excel
+            final_data.append({
+                "Publish Date": publish_date,
+                "Agency": agency,
+                "Product": product,
+                "Seller": seller,
+                "Buyer": buyer,
+                "Vessel": vessel,
+                "Volume (t)": volume,
+                "Origin": origin,
+                "Date of arrival": date_str,
+                "Discharge port": discharge_port,
+                "Low": price_info["Low"],
+                "High": price_info["High"],
+                "Average": price_info["Average"],
+                "Incoterm": "",
+                "Destination": "",
+                "Grade": "",
+            })
+    warnings = check_price_outliers(price_data)
+    for msg in warnings:
+        print(f"[WARNING] {msg}")
 
-    # Парсим данные для Indian imports
-    if start_parsing_indian and first_cell:
-        seller = first_cell
-        buyer = str(row[1]).strip() if 1 < len(row) and not pd.isna(row[1]) else ""
-        vessel = str(row[2]).strip() if 2 < len(row) and not pd.isna(row[2]) else ""
-        vol_origin = str(row[3]).strip() if 3 < len(row) and not pd.isna(row[3]) else ""
-        date_port = str(row[4]).strip() if 4 < len(row) and not pd.isna(row[4]) else ""
-        price = str(row[5]).strip() if 5 < len(row) and not pd.isna(row[5]) else ""
-
-        # Парсим Volume и Origin
-        volume = ""
-        origin = ""
-        if vol_origin:
-            vol_match = re.match(r'^([\d,]+)\s*(.*)$', vol_origin)
-            if vol_match:
-                volume = vol_match.group(1).replace(',', '')
-                origin = vol_match.group(2).strip()
-            else:
-                origin = vol_origin
-
-        # Парсим Date и Discharge port
-        date_str = parse_date(date_port)
-        discharge_port = ""
-        if date_port:
-            # Полностью очищаем строку от цифр, тире и месяцев
-            discharge_port = re.sub(
-                r'\d{1,2}\s*-*\s*|'  # Удаляем цифры и тире перед ними
-                r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\b|'
-                r'\b(mid|early|end)\b|'
-                r'\bjune\b|\bjuly\b|\baugust\b|\bseptember\b|\boctober\b|\bnovember\b|\bdecember\b',
-                '', date_port, flags=re.IGNORECASE
-            ).strip()
-            # Удаляем оставшиеся тире и пробелы
-            discharge_port = re.sub(r'^-+\s*|\s*-+\s*$', '', discharge_port).strip()
-            # Удаляем все цифры, если остались
-            discharge_port = re.sub(r'\d+', '', discharge_port).strip()
-            # Окончательная очистка
-            discharge_port = discharge_port.lstrip('-').strip()
-
-        # Цена — только числа
-        price_clean = ""
-        price_match = re.search(r'([\d\.]+)', price)
-        if price_match:
-            price_clean = price_match.group(1)
-
-        # Добавляем в результат
-        final_data.append({
-            "Agency": agency,
-            "Product": product,
-            "Seller": seller,
-            "Buyer": buyer,
-            "Vessel": vessel,
-            "Volume (t)": volume,
-            "Origin": origin,
-            "Date of arrival": date_str,
-            "Discharge port": discharge_port,
-            "Price": price_clean,
-            "Incoterm": "",
-            "Destination": "",
-            "Grade": "",
-            "Loading port": ""
-        })
 
 # ======================================
-# Парсинг таблицы Spot Sales
+# Парсинг Spot Sales
 # ======================================
-start_parsing_spot = False
-print("[INFO] Переходим к парсингу Spot Sales...")
-
-for i, row in df.iterrows():
-    first_cell = str(row[0]).strip() if not pd.isna(row[0]) else ""
-
-    # Пропускаем пустые строки
-    if not first_cell:
-        continue
-
-    # Нашли "Spot sales"
-    if re.search(r'spot\s*sales', first_cell, re.IGNORECASE):
-        start_parsing_spot = True
-        continue
-
-    # Если начали парсить и нашли "Shipment" — это заголовок
-    if start_parsing_spot and first_cell == "Shipment":
-        continue
-
-    # Если начали парсить и встретили "Copyright" — завершаем
-    if start_parsing_spot and any(keyword in first_cell.lower() for keyword in ['copyright', 'лицензия']):
-        print("Найдена строка 'Copyright' — завершаем парсинг Spot Sales")
-        break
-
-
-    # Парсим данные для Spot Sales (ТОЛЬКО ЕСЛИ ДОСТАТОЧНО КОЛОНОК)
-    if start_parsing_spot and first_cell and len(row) > 6:
-        shipment = first_cell
-        seller = str(row[1]).strip() if not pd.isna(row[1]) else ""
-        buyer = str(row[2]).strip() if not pd.isna(row[2]) else ""
-        destination_val = str(row[3]).strip() if not pd.isna(row[3]) else ""
-        tonnes = str(row[4]).strip() if not pd.isna(row[4]) else ""
-        price_incoterm = str(row[5]).strip() if not pd.isna(row[5]) else ""
-        origin_value = str(row[6]).strip() if not pd.isna(row[6]) else ""
-
-        # Парсим Date из Shipment с использованием новой функции
-        date_str = parse_date(shipment)
-
-        # Парсим Volume (t) - убираем запятые в числах
-        volume = ""
-        if tonnes:
-            vol_match = re.search(r'([\d,]+)', tonnes)
-            if vol_match:
-                volume = vol_match.group(1).replace(',', '')
-
-        # Парсим Price и Incoterm
-        price_clean = ""
-        incoterm = ""
-        if price_incoterm:
-            price_match = re.search(r'([\d\.,]+)', price_incoterm)
-            if price_match:
-                price_clean = price_match.group(1).replace(',', '')
-
+def parse_spot_sales(df, final_data, agency, product, publish_date):
+    start_parsing = False
+    price_data = []
+    print("[INFO] Переходим к парсингу Spot Sales...")
+    for i, row in df.iterrows():
+        first_cell = str(row[0]).strip() if not pd.isna(row[0]) else ""
+        if not first_cell:
+            continue
+        if re.search(r'spot\s*sales', first_cell, re.IGNORECASE):
+            start_parsing = True
+            continue
+        if start_parsing and first_cell == "Shipment":
+            continue
+        if start_parsing and any(keyword in first_cell.lower() for keyword in ['copyright', 'лицензия']):
+            break
+        if start_parsing and first_cell and len(row) > 6:
+            shipment = first_cell
+            seller = str(row[1]).strip() if not pd.isna(row[1]) else ""
+            buyer = str(row[2]).strip() if not pd.isna(row[2]) else ""
+            destination_val = str(row[3]).strip() if not pd.isna(row[3]) else ""
+            tonnes = str(row[4]).strip() if not pd.isna(row[4]) else ""
+            price_incoterm = str(row[5]).strip() if not pd.isna(row[5]) else ""
+            origin_value = str(row[6]).strip() if not pd.isna(row[6]) else ""
+            date_str = parse_date(shipment)
+            volume = ""
+            if tonnes:
+                vol_match = re.search(r'([\d,]+)', tonnes)
+                if vol_match:
+                    volume = vol_match.group(1).replace(',', '')
+            price_info = process_prices(price_incoterm)
+            if price_info["Average"]:
+                price_data.append((i + 1, int(price_info["Average"])))
+            incoterm = ""
             incoterm_match = re.search(
                 r'(fob|cfr|cif|fca|dap|cpt|c\w+?r|rail|exw|ddp|dpu|d\w+?p|f\w+?t|c\w+?y)',
                 price_incoterm,
@@ -221,64 +249,49 @@ for i, row in df.iterrows():
             )
             if incoterm_match:
                 incoterm = incoterm_match.group().upper()
+            origin_processed = origin_value.split('/')[0].split('-')[0].strip()
+            final_data.append({
+                "Publish Date": publish_date,
+                "Agency": agency,
+                "Product": product,
+                "Seller": seller,
+                "Buyer": buyer,
+                "Vessel": "",
+                "Volume (t)": volume,
+                "Origin": origin_processed,
+                "Date of arrival": date_str,
+                "Discharge port": "",
+                "Low": price_info["Low"],
+                "High": price_info["High"],
+                "Average": price_info["Average"],
+                "Incoterm": incoterm,
+                "Destination": destination_val,
+                "Grade": "",
+            })
+    warnings = check_price_outliers(price_data)
+    for msg in warnings:
+        print(f"[WARNING] {msg}")
 
-        # Обрабатываем Origin - берем только часть до / или -
-        origin_processed = origin_value.split('/')[0].split('-')[0].strip()
-
-        # Добавляем в результат
-        final_data.append({
-            "Agency": agency,
-            "Product": product,
-            "Seller": seller,
-            "Buyer": buyer,
-            "Vessel": "",
-            "Volume (t)": volume,
-            "Origin": origin_processed,  # Используем обработанное значение
-            "Date of arrival": date_str,
-            "Discharge port": "",
-            "Price": price_clean,
-            "Incoterm": incoterm,
-            "Destination": destination_val,
-            "Grade": "",
-            "Loading port": ""
-        })
 
 # ======================================
-# Парсинг таблицы Recent spot sales
+# Парсинг Recent spot sales
 # ======================================
-start_parsing_recent = False
-print("[INFO] Переходим к парсингу Recent spot sales...")
-full_month_names = [
-    'January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December'
-]
-
-for i, row in df.iterrows():
-    first_cell = str(row[0]).strip() if not pd.isna(row[0]) else ""
-    if not first_cell:
-        continue
-
-    # Поиск начала таблицы
-    if re.search(r'recent\s*spot\s*sales', first_cell, re.IGNORECASE):
-        start_parsing_recent = True
-        continue
-
-    if start_parsing_recent and first_cell == "Supplier":
-        continue
-
-    if start_parsing_recent and any(keyword in first_cell.lower() for keyword in ['copyright', 'лицензия']):
-        print("Найдена строка 'Copyright' — завершаем парсинг Recent spot sales")
-        break
-
-    # Основной парсинг
-    if start_parsing_recent and first_cell:
-        try:
-            # Проверяем, достаточно ли колонок
-            if len(row) < 9:
-                print(f"[WARNING] Строка {i} содержит меньше 9 колонок → пропускаем.")
-                continue
-
-            # Получаем данные из строки
+def parse_recent_spot_sales(df, final_data, agency, product, publish_date):
+    start_parsing = False
+    price_data = []
+    print("[INFO] Переходим к парсингу Recent spot sales...")
+    for i, row in df.iterrows():
+        first_cell = str(row[0]).strip() if not pd.isna(row[0]) else ""
+        if not first_cell:
+            continue
+        if re.search(r'recent\s*spot\s*sales', first_cell, re.IGNORECASE):
+            start_parsing = True
+            continue
+        if start_parsing and first_cell == "Supplier":
+            continue
+        if start_parsing and any(keyword in first_cell.lower() for keyword in ['copyright', 'лицензия']):
+            break
+        if start_parsing and first_cell and len(row) >= 9:
             supplier = str(row[0]).strip()
             origin = str(row[1]).strip()
             buyer = str(row[2]).strip()
@@ -303,33 +316,34 @@ for i, row in df.iterrows():
                         if vol_num:
                             volume_processed = str(int(vol_num.group(1)) * 1000)
                 except Exception as ve:
-                    print(f"[ERROR] Ошибка при обработке Volume на строке {i}: {ve}")
+                    print(f"[ERROR] Ошибка при обработке Volume: {ve}")
                     volume_processed = ""
 
-            # --- Обработка Price (берём первые 3 цифры) ---
-            price_clean = ""
-            if price_range:
-                price_str = re.sub(r'[\s,\–\-\u2013]', '', price_range)
-                if price_str.isdigit() and len(price_str) >= 6:
-                    price_clean = price_str[:3]
-                else:
-                    first_num = re.search(r'\b\d+\b', price_range)
-                    if first_num:
-                        num_str = first_num.group(0)
-                        price_clean = num_str[:3] if len(num_str) >= 3 else num_str
+            # --- Обработка Price ---
+            price_info = process_prices(price_range)
+            if price_info["Average"]:
+                price_data.append((i + 1, int(price_info["Average"])))
 
             # --- Обработка Shipment period ---
             date_str = ""
             if shipment_period and shipment_period != 'TBC':
                 shipment_lower = shipment_period.strip().lower()
+                # Попробуем найти точное совпадение по полному названию месяца
                 for month in full_month_names:
-                    if shipment_lower == month.lower() or shipment_lower == month[:3].lower():
+                    if shipment_lower == month.lower():
                         month_index = full_month_names.index(month) + 1
                         date_str = f"01.{month_index:02d}"
                         break
+                # Если не нашли — проверим по первым 3 буквам
+                if not date_str:
+                    for month in full_month_names:
+                        if shipment_lower == month[:3].lower():
+                            month_index = full_month_names.index(month) + 1
+                            date_str = f"01.{month_index:02d}"
+                            break
 
-            # --- Добавляем результат ---
             final_data.append({
+                "Publish Date": publish_date,
                 "Agency": agency,
                 "Product": product,
                 "Seller": supplier,
@@ -339,55 +353,44 @@ for i, row in df.iterrows():
                 "Origin": origin,
                 "Date of arrival": date_str,
                 "Discharge port": "",
-                "Price": price_clean,
+                "Low": price_info["Low"],
+                "High": price_info["High"],
+                "Average": price_info["Average"],
                 "Incoterm": basis.upper(),
                 "Destination": destination,
-                "Grade": product_grade,
-                "Loading port": ""
+                "Grade": product_grade
             })
+    warnings = check_price_outliers(price_data)
+    for msg in warnings:
+        print(f"[WARNING] {msg}")
 
-        except Exception as e:
-            print(f"[ERROR] Ошибка при обработке строки {i}: {e}")
+
+# ======================================
+# Парсинг Indian NPK arrivals
+# ======================================
+def parse_indian_npk_arrivals(df, final_data, agency, product, publish_date):
+    start_parsing = False
+    price_data = []
+    print("[INFO] Переходим к парсингу Indian NPK arrivals...")
+    for i, row in df.iterrows():
+        first_cell = str(row[0]).strip() if not pd.isna(row[0]) else ""
+        if not first_cell:
             continue
-
-# ======================================
-# Парсинг таблицы Indian NPK arrivals
-# ======================================
-start_parsing_npk = False
-print("[INFO] Переходим к парсингу Indian NPK arrivals...")
-
-for i, row in df.iterrows():
-    first_cell = str(row[0]).strip() if not pd.isna(row[0]) else ""
-    if not first_cell:
-        continue
-
-    # Поиск начала таблицы
-    if re.search(r'indian\s*npk\s*arrivals', first_cell, re.IGNORECASE):
-        start_parsing_npk = True
-        continue
-
-    # Пропускаем заголовок
-    if start_parsing_npk and first_cell == "Supplier":
-        continue
-
-    # Останавливаем парсинг при встрече строки 'Grand Total'
-    if start_parsing_npk and re.search(r'^grand\s+total', first_cell, re.IGNORECASE):
-        print(f"[INFO] Найдена строка 'Grand Total' — завершаем парсинг Indian NPK arrivals")
-        break
-
-    # Пропускаем строку 'Total'
-    if start_parsing_npk and first_cell.lower() == "total":
-        print(f"[DEBUG] Пропускаем строку 'Total' (Indian NPK arrivals) на строке {i}")
-        continue
-
-    # Основной парсинг
-    if start_parsing_npk and first_cell:
-        try:
-            # Проверяем, что колонок достаточно (минимум 6)
+        if re.search(r'indian\s+npk\s+arrivals', first_cell, re.IGNORECASE):
+            start_parsing = True
+            continue
+        if start_parsing and first_cell == "Supplier":
+            continue
+        if start_parsing and re.search(r'^grand\s+total', first_cell, re.IGNORECASE):
+            print(f"[INFO] Найдена строка 'Grand Total' — завершаем парсинг Indian NPK arrivals")
+            break
+        if start_parsing and first_cell.lower() == "total":
+            print(f"[DEBUG] Пропускаем строку 'Total' (Indian NPK arrivals) на строке {i+1}")
+            continue
+        if start_parsing and first_cell:
             if len(row) < 6:
                 print(f"[WARNING] Строка {i} содержит меньше 6 колонок → пропускаем.")
                 continue
-
             supplier = str(row[0]).strip()
             buyer = str(row[1]).strip()
             vessel = str(row[2]).strip()
@@ -395,8 +398,7 @@ for i, row in df.iterrows():
             vol_loading = str(row[4]).strip()
             discharge_port = str(row[5]).strip()
             arrival = str(row[6]).strip() if len(row) > 6 else ""
-
-            # Обработка Volume и Loading port
+            # --- Обработка Volume и Loading port ---
             volume_clean = ""
             loading_port = ""
             if vol_loading:
@@ -406,10 +408,12 @@ for i, row in df.iterrows():
                     loading_port = vol_match.group(2).strip()
                 else:
                     loading_port = vol_loading.strip()
-
             date_str = parse_date(arrival)
-
+            price_info = process_prices("")
+            if price_info["Average"]:
+                price_data.append((i + 1, int(price_info["Average"])))
             final_data.append({
+                "Publish Date": publish_date,
                 "Agency": agency,
                 "Product": product,
                 "Seller": "",
@@ -419,26 +423,54 @@ for i, row in df.iterrows():
                 "Origin": supplier,
                 "Date of arrival": date_str,
                 "Discharge port": discharge_port,
-                "Price": "",
+                "Low": "",
+                "High": "",
+                "Average": "",
                 "Incoterm": "",
                 "Destination": "",
                 "Grade": grade,
                 "Loading port": loading_port
             })
+    warnings = check_price_outliers(price_data)
+    for msg in warnings:
+        print(f"[WARNING] {msg}")
 
-        except Exception as e:
-            print(f"[ERROR] Ошибка при обработке строки {i}: {e}")
-            continue
+
 # ======================================
-# Создаём DataFrame и сохраняем результат
+# Основной цикл парсинга
+# ======================================
+for file_info in FILES:
+    file_path = file_info["path"]
+    tables_to_parse = file_info["tables"]
+    print(f"[INFO] Загружаем файл: {file_path}")
+    df = pd.read_excel(file_path, header=None)
+    # Извлекаем Agency и Product из названия файла
+    file_name = os.path.basename(file_path).replace('.xlsx', '')
+    file_parts = file_name.split('_')
+    agency = file_parts[0].strip()
+    product = ' '.join(file_parts[1:]).split(' ')[0].strip() if len(file_parts) > 1 else ''
+    # Извлекаем дату публикации
+    publish_date = extract_publish_date(file_name)
+    # Парсим нужные таблицы
+    if "Indian imports" in tables_to_parse:
+        parse_indian_imports(df, final_data, agency, product, publish_date)
+    if "Spot Sales" in tables_to_parse:
+        parse_spot_sales(df, final_data, agency, product, publish_date)
+    if "Recent spot sales" in tables_to_parse:
+        parse_recent_spot_sales(df, final_data, agency, product, publish_date)
+    if "Indian NPK arrivals" in tables_to_parse:
+        parse_indian_npk_arrivals(df, final_data, agency, product, publish_date)
+
+
+# ======================================
+# Сохраняем результат в Excel
 # ======================================
 columns_order = [
-    "Agency", "Product", "Seller", "Buyer", "Vessel",
-    "Volume (t)", "Origin", "Date of arrival", "Discharge port", "Price", "Incoterm", "Destination", "Grade", "Loading port"
+    "Publish Date", "Agency", "Product", "Seller", "Buyer", "Vessel",
+    "Volume (t)", "Origin", "Date of arrival", "Discharge port",
+    "Low", "High", "Average", "Incoterm", "Destination", "Grade", "Loading port"
 ]
 result_df = pd.DataFrame(final_data, columns=columns_order)
-
-output_file = 'processed_combined.xlsx'
+output_file = 'processed_final_output.xlsx'
 result_df.to_excel(output_file, index=False)
-
 print(f"✅ Файл успешно обработан и сохранён как '{output_file}'")
