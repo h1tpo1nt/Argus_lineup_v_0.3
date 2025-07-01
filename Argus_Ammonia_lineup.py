@@ -153,7 +153,8 @@ for i, row in df.iterrows():
             "Discharge port": discharge_port,
             "Price": price_clean,
             "Incoterm": "",
-            "Destination": ""
+            "Destination": "",
+            "Grade": "" 
         })
 
 # ======================================
@@ -236,16 +237,125 @@ for i, row in df.iterrows():
             "Discharge port": "",
             "Price": price_clean,
             "Incoterm": incoterm,
-            "Destination": destination_val
+            "Destination": destination_val,
+            "Grade": ""  
         })
 
+# ======================================
+# Парсинг таблицы Recent spot sales
+# ======================================
+start_parsing_recent = False
+print("[INFO] Переходим к парсингу Recent spot sales...")
+full_month_names = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+]
 
+for i, row in df.iterrows():
+    first_cell = str(row[0]).strip() if not pd.isna(row[0]) else ""
+    if not first_cell:
+        continue
+
+    # Поиск начала таблицы
+    if re.search(r'recent\s*spot\s*sales', first_cell, re.IGNORECASE):
+        start_parsing_recent = True
+        print(f"[DEBUG] Начало таблицы Recent spot sales на строке {i}")
+        continue
+
+    if start_parsing_recent and first_cell == "Supplier":
+        print(f"[DEBUG] Пропускаем заголовок на строке {i}")
+        continue
+
+    if start_parsing_recent and any(keyword in first_cell.lower() for keyword in ['copyright', 'лицензия']):
+        print("Найдена строка 'Copyright' — завершаем парсинг Recent spot sales")
+        break
+
+    # Основной парсинг
+    if start_parsing_recent and first_cell:
+        try:
+            # Проверяем, достаточно ли колонок
+            if len(row) < 9:
+                print(f"[WARNING] Строка {i} содержит меньше 9 колонок → пропускаем.")
+                continue
+
+            # Получаем данные из строки
+            supplier = str(row[0]).strip()
+            origin = str(row[1]).strip()
+            buyer = str(row[2]).strip()
+            destination = str(row[3]).strip()
+            product_grade = str(row[4]).strip()
+            volume = str(row[5]).strip()
+            price_range = str(row[6]).strip()
+            basis = str(row[7]).strip()
+            shipment_period = str(row[9]).strip()
+
+            print(f"[DEBUG] Обработка строки {i}: {supplier}, {buyer}, {shipment_period}")
+
+            # --- Обработка Volume ---
+            volume_processed = ""
+            if volume:
+                try:
+                    vol_expr = re.sub(r'[хХxX*×]', '*', volume.replace(',', ''))
+                    vol_expr = re.sub(r'[:÷]', '/', vol_expr)
+                    if re.search(r'[\+\-\*/]', vol_expr):
+                        result = eval(vol_expr)
+                        volume_processed = str(int(result) * 1000)
+                    else:
+                        vol_num = re.search(r'(\d+)', vol_expr)
+                        if vol_num:
+                            volume_processed = str(int(vol_num.group(1)) * 1000)
+                except Exception as ve:
+                    print(f"[ERROR] Ошибка при обработке Volume на строке {i}: {ve}")
+                    volume_processed = ""
+
+            # --- Обработка Price (берём первые 3 цифры) ---
+            price_clean = ""
+            if price_range:
+                price_str = re.sub(r'[\s,\–\-\u2013]', '', price_range)
+                if price_str.isdigit() and len(price_str) >= 6:
+                    price_clean = price_str[:3]
+                else:
+                    first_num = re.search(r'\b\d+\b', price_range)
+                    if first_num:
+                        num_str = first_num.group(0)
+                        price_clean = num_str[:3] if len(num_str) >= 3 else num_str
+
+            # --- Обработка Shipment period ---
+            date_str = ""
+            if shipment_period and shipment_period != 'TBC':
+                shipment_lower = shipment_period.strip().lower()
+                for month in full_month_names:
+                    if shipment_lower == month.lower() or shipment_lower == month[:3].lower():
+                        month_index = full_month_names.index(month) + 1
+                        date_str = f"01.{month_index:02d}"
+                        break
+
+            # --- Добавляем результат ---
+            final_data.append({
+                "Agency": agency,
+                "Product": product,
+                "Seller": supplier,
+                "Buyer": buyer,
+                "Vessel": "",
+                "Volume (t)": volume_processed,
+                "Origin": origin,
+                "Date of arrival": date_str,
+                "Discharge port": "",
+                "Price": price_clean,
+                "Incoterm": basis.upper(),
+                "Destination": destination,
+                "Grade": product_grade
+            })
+
+        except Exception as e:
+            print(f"[ERROR] Ошибка при обработке строки {i}: {e}")
+            continue
 # ======================================
 # Создаём DataFrame и сохраняем результат
 # ======================================
 columns_order = [
     "Agency", "Product", "Seller", "Buyer", "Vessel",
-    "Volume (t)", "Origin", "Date of arrival", "Discharge port", "Price", "Incoterm", "Destination"
+    "Volume (t)", "Origin", "Date of arrival", "Discharge port", "Price", "Incoterm", "Destination", "Grade"
 ]
 result_df = pd.DataFrame(final_data, columns=columns_order)
 
