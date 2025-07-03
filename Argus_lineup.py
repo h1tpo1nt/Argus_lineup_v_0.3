@@ -9,7 +9,8 @@ import os
 FILES = [
     {
         "path": "/content/Argus Ammonia _ Russia version (2025-06-12).xlsx",
-        "tables": ["Indian imports", "Spot Sales", "Recent spot sales", "Indian NPK arrivals"]
+        "tables": ["Indian imports", "Spot Sales", "Recent spot sales", "Indian NPK arrivals", 
+                   "Selected Spot Sales", "India MOP vessel line-up", "Brazil Potash line-up"]
     }
 ]
 full_month_names = [
@@ -199,6 +200,10 @@ def parse_indian_imports(df, final_data, agency, product, publish_date, file_nam
                 "Incoterm": "",
                 "Destination": "",
                 "Grade": "",
+                "Loading port": "",
+                "Shipment Date": "",
+                "Charterer": "",
+                "ETB": ""
             })
     price_warnings = check_price_outliers(price_data, file_name_short)
     for idx, msg in price_warnings.items():
@@ -268,6 +273,10 @@ def parse_spot_sales(df, final_data, agency, product, publish_date, file_name_sh
                 "Incoterm": incoterm,
                 "Destination": destination_val,
                 "Grade": "",
+                "Loading port": "",
+                "Shipment Date": "",
+                "Charterer": "",
+                "ETB": ""
             })
     price_warnings = check_price_outliers(price_data, file_name_short)
     for idx, msg in price_warnings.items():
@@ -355,7 +364,11 @@ def parse_recent_spot_sales(df, final_data, agency, product, publish_date, file_
                 "Average": price_info["Average"],
                 "Incoterm": basis.upper(),
                 "Destination": destination,
-                "Grade": product_grade
+                "Grade": product_grade,
+                "Loading port": "",
+                "Shipment Date": "",
+                "Charterer": "",
+                "ETB": ""
             })
     price_warnings = check_price_outliers(price_data, file_name_short)
     for idx, msg in price_warnings.items():
@@ -429,13 +442,334 @@ def parse_indian_npk_arrivals(df, final_data, agency, product, publish_date, fil
                 "Incoterm": "",
                 "Destination": "",
                 "Grade": grade,
-                "Loading port": loading_port
+                "Loading port": loading_port,
+                "Shipment Date": "",
+                "Charterer": "",
+                "ETB": ""
             })
     price_warnings = check_price_outliers(price_data, file_name_short)
     for idx, msg in price_warnings.items():
         final_data[idx]["Average"] = msg
 
+# ======================================
+# Парсинг Selected Spot Sales
+# ======================================
+def parse_selected_spot_sales(df, final_data, agency, publish_date, file_name_short):
+    start_parsing = False
+    print("[INFO] Начинаем парсить Selected Spot Sales...")
 
+    # Получаем product из имени файла
+    file_name_base = os.path.basename(file_name_short).split('_')[0].strip()
+    file_name_parts = file_name_base.split()
+    default_product = file_name_parts[1] if len(file_name_parts) > 1 else ""
+
+    for i, row in df.iterrows():
+        first_cell = str(row[0]).strip() if not pd.isna(row[0]) else ""
+
+        # Поиск начала таблицы
+        if re.search(r'\bselected.*spot.*sales\b', first_cell, re.IGNORECASE):
+            start_parsing = True
+            continue
+
+        # Пропуск строк с заголовками
+        if start_parsing and any(
+            isinstance(col, str) and col.strip().lower() in ["origin", "seller", "buyer", "destination", "volume ('000t)", "price delivery period"]
+            for col in row[:7]
+        ):
+            continue
+
+        # Окончание таблицы
+        if start_parsing and any(kw in first_cell.lower() for kw in ['copyright', 'total', 'note']):
+            break
+
+        if start_parsing and first_cell:
+            # Пропуск строк, где все ячейки, кроме первой, пустые
+            if all(pd.isna(cell) or str(cell).strip() == "" for cell in row[1:]):
+                continue
+
+            if len(row) < 7:
+                print(f"[WARNING] Строка {i} содержит меньше 7 колонок → пропускаем.")
+                continue
+
+            origin = str(row[0]).strip()
+            seller = str(row[1]).strip()
+            buyer = str(row[2]).strip()
+            destination = str(row[3]).strip()
+            volume_product = str(row[4]).strip()
+            price = str(row[5]).strip()
+            delivery_period = str(row[6]).strip() if len(row) > 6 else ""
+
+            # Обработка Volume и Product
+            volume = ""
+            product = ""
+            if volume_product:
+                vol_prod_match = re.match(r'^([\d,]+)\s*(.*)$', volume_product)
+                if vol_prod_match:
+                    vol_str = vol_prod_match.group(1)
+                    vol_clean = re.sub(r'[^\d]', '', vol_str)
+                    if vol_clean.isdigit():
+                        volume = vol_clean + "000"
+                    product = vol_prod_match.group(2).strip()
+
+            # Если Product пустой или TBC → брать из имени файла
+            if not product or product.upper() in ["TBC", "-", ".", "..", "...", "N/A"]:
+                product = default_product
+
+            # Обработка цены
+            price_info = process_prices(price)
+            low = price_info["Low"]
+            high = price_info["High"]
+            average = price_info["Average"]
+
+            # Обработка Incoterm
+            incoterm = ""
+            if price:
+                incoterm_match = re.search(r'[A-Za-z]{3}$', price)
+                if incoterm_match:
+                    incoterm = incoterm_match.group().upper()
+
+            # Обработка Shipment Date
+            shipment_date = ""
+            if delivery_period:
+                month_match = re.search(
+                    r'\b(jan|january|feb|february|mar|march|apr|april|may|jun|june|'
+                    r'jul|july|aug|august|sep|september|oct|october|nov|november|dec|december)\b',
+                    delivery_period.lower()
+                )
+                if month_match:
+                    month_str = month_match.group(1)[:3].capitalize()
+                    try:
+                        current_year = datetime.now().year
+                        dt = datetime.strptime(f"01 {month_str} {current_year}", "%d %b %Y")
+                        shipment_date = dt.strftime("%d.%m")
+                    except ValueError:
+                        pass
+
+            # Добавляем запись
+            final_data.append({
+                "Publish Date": publish_date,
+                "Agency": agency,
+                "Product": product,
+                "Seller": seller,
+                "Buyer": buyer,
+                "Vessel": "",
+                "Volume (t)": volume,
+                "Origin": origin,
+                "Date of arrival": "",
+                "Discharge port": "",
+                "Low": low,
+                "High": high,
+                "Average": average,
+                "Incoterm": incoterm,
+                "Destination": destination,
+                "Grade": "",
+                "Loading port": "",
+                "Shipment Date": shipment_date,
+                "Charterer": "",
+                "ETB": ""
+            })
+# ======================================
+# Парсинг India MOP vessel line-up
+# удалить вручную строки с непонятными данными
+# ======================================
+def parse_india_mop_vessel_lineup(df, final_data, agency, product, publish_date, file_name_short):
+    print("[INFO] Начинаем парсить India MOP vessel line-up...")
+    
+    # Сначала найдем точное положение шапки таблицы
+    header_row = -1
+    for i, row in df.iterrows():
+        if 'Seller/Buyer' in str(row[0]) and 'Vessel' in str(row[1]) and 'Tonnes' in str(row[2]):
+            header_row = i
+            break
+    
+    if header_row == -1:
+        print("[ERROR] Не найдена шапка таблицы India MOP vessel line-up")
+        return
+    
+    # Теперь найдем первую строку с данными после шапки
+    first_data_row = -1
+    for i in range(header_row + 1, len(df)):
+        row = df.iloc[i]
+        first_cell = str(row[0]).strip()
+        if '/' in first_cell and any(c.isdigit() for c in str(row[2])):
+            first_data_row = i
+            break
+    
+    if first_data_row == -1:
+        print("[ERROR] Не найдены данные после шапки таблицы")
+        return
+    
+    print(f"[DEBUG] Шапка таблицы в строке {header_row+1}, данные начинаются с строки {first_data_row+1}")
+    
+    # Теперь парсим только данные, начиная с найденной строки
+    for i in range(first_data_row, len(df)):
+        row = df.iloc[i]
+        first_cell = str(row[0]).strip()
+        
+        # Критерии остановки
+        if not first_cell or first_cell.lower() in ['copyright', 'total']:
+            break
+            
+        # Проверка формата данных
+        if len(row) < 6 or '/' not in first_cell:
+            continue
+            
+        # Обработка данных
+        seller_buyer = first_cell
+        vessel = str(row[1]).strip()
+        tonnes = str(row[2]).strip()
+        load_port = str(row[3]).strip()
+        discharge_port = str(row[4]).strip()
+        arrival = str(row[5]).strip()
+
+        # Разделение Seller/Buyer
+        seller, buyer = seller_buyer.split('/', 1) if '/' in seller_buyer else (seller_buyer, "")
+        
+        # Очистка объема
+        volume = ''.join(c for c in tonnes if c.isdigit())
+
+        # Добавление записи
+        final_data.append({
+            "Publish Date": publish_date,
+            "Agency": agency,
+            "Product": product,
+            "Seller": seller.strip(),
+            "Buyer": buyer.strip(),
+            "Vessel": vessel,
+            "Volume (t)": volume,
+            "Origin": "",
+            "Date of arrival": parse_date(arrival),
+            "Discharge port": discharge_port,
+            "Low": "",
+            "High": "",
+            "Average": "",
+            "Incoterm": "",
+            "Destination": "",
+            "Grade": "",
+            "Loading port": load_port,
+            "Shipment Date": "",
+            "Charterer": "",
+            "ETB": ""
+        })
+# ======================================
+# Парсинг Brazil Potash line-up
+# ======================================
+def parse_brazil_potash_lineup(df, final_data, agency, product, publish_date, file_name_short):
+    print("[INFO] Начинаем парсить Brazil Potash line-up...")
+    
+    # 1. Находим начало таблицы по ключевым словам
+    start_row = -1
+    for i, row in df.iterrows():
+        row_str = ' '.join(str(cell).strip().lower() for cell in row if pd.notna(cell))
+        if 'brazil potash line-up' in row_str.lower():
+            start_row = i
+            break
+    
+    if start_row == -1:
+        print("[ERROR] Не найдено начало таблицы Brazil Potash line-up")
+        return
+    
+    # 2. Ищем строку с заголовками
+    header_row = -1
+    required_headers = ['port', 'vessel', 'charterer', 'origin', 'product', 'volume', 'receiver', 'eta', 'etb']
+    
+    for i in range(start_row, min(start_row + 10, len(df))):  # Ищем в следующих 10 строках
+        row = df.iloc[i]
+        row_headers = [str(cell).strip().lower() for cell in row if pd.notna(cell)]
+        
+        if all(any(h in header for header in row_headers) for h in required_headers):
+            header_row = i
+            break
+    
+    if header_row == -1:
+        print("[ERROR] Не найдена строка с заголовками Brazil Potash line-up")
+        return
+    
+    # 3. Определяем индексы колонок
+    col_map = {}
+    header = df.iloc[header_row]
+    
+    for idx, cell in enumerate(header):
+        cell_str = str(cell).strip().lower()
+        if 'port' in cell_str:
+            col_map['port'] = idx
+        elif 'vessel' in cell_str:
+            col_map['vessel'] = idx
+        elif 'charterer' in cell_str:
+            col_map['charterer'] = idx
+        elif 'origin' in cell_str:
+            col_map['origin'] = idx
+        elif 'product' in cell_str:
+            col_map['product'] = idx
+        elif 'volume' in cell_str:
+            col_map['volume'] = idx
+        elif 'receiver' in cell_str:
+            col_map['receiver'] = idx
+        elif 'eta' in cell_str:
+            col_map['eta'] = idx
+        elif 'etb' in cell_str:
+            col_map['etb'] = idx
+    
+    # 4. Парсим данные
+    empty_rows = 0
+    for i in range(header_row + 1, len(df)):
+        row = df.iloc[i]
+        
+        # Проверяем второй столбец на пустоту
+        vessel_col = col_map.get('vessel', 1)
+        if pd.isna(row[vessel_col]) or str(row[vessel_col]).strip() == "":
+            empty_rows += 1
+            if empty_rows >= 3:
+                break
+            continue
+        
+        empty_rows = 0
+        
+        # Получаем данные
+        port = str(row[col_map['port']]).strip() if 'port' in col_map and col_map['port'] < len(row) and pd.notna(row[col_map['port']]) else ""
+        vessel = str(row[col_map['vessel']]).strip() if 'vessel' in col_map and col_map['vessel'] < len(row) and pd.notna(row[col_map['vessel']]) else ""
+        charterer = str(row[col_map['charterer']]).strip() if 'charterer' in col_map and col_map['charterer'] < len(row) and pd.notna(row[col_map['charterer']]) else ""
+        origin = str(row[col_map['origin']]).strip() if 'origin' in col_map and col_map['origin'] < len(row) and pd.notna(row[col_map['origin']]) else ""
+        
+        # Product (из таблицы или названия файла)
+        product_name = str(row[col_map['product']]).strip() if 'product' in col_map and col_map['product'] < len(row) and pd.notna(row[col_map['product']]) else product
+        
+        # Volume (очистка)
+        volume = ""
+        if 'volume' in col_map and col_map['volume'] < len(row) and pd.notna(row[col_map['volume']]):
+            volume = re.sub(r'[^\d]', '', str(row[col_map['volume']]))
+        
+        receiver = str(row[col_map['receiver']]).strip() if 'receiver' in col_map and col_map['receiver'] < len(row) and pd.notna(row[col_map['receiver']]) else ""
+        
+        # Обработка дат
+        eta_date = parse_date(str(row[col_map['eta']])) if 'eta' in col_map and col_map['eta'] < len(row) and pd.notna(row[col_map['eta']]) else ""
+        etb_date = parse_date(str(row[col_map['etb']])) if 'etb' in col_map and col_map['etb'] < len(row) and pd.notna(row[col_map['etb']]) else ""
+        
+        # Добавляем запись
+        final_data.append({
+            "Publish Date": publish_date,
+            "Agency": agency,
+            "Product": product_name,
+            "Seller": "",
+            "Buyer": receiver,
+            "Vessel": vessel,
+            "Volume (t)": volume,
+            "Origin": origin,
+            "Date of arrival": eta_date,
+            "Discharge port": port,
+            "Low": "",
+            "High": "",
+            "Average": "",
+            "Incoterm": "",
+            "Destination": "",
+            "Grade": "",
+            "Loading port": "",
+            "Shipment Date": "",
+            "Charterer": charterer,
+            "ETB": etb_date
+        })
+
+    print(f"[INFO] Обработано {len([x for x in final_data if x['Agency'] == agency and x['Product'] == product_name])} записей Brazil Potash line-up")
 # ======================================
 # Основной цикл парсинга
 # ======================================
@@ -443,12 +777,21 @@ for file_info in FILES:
     file_path = file_info["path"]
     tables_to_parse = file_info["tables"]
     print(f"[INFO] Загружаем файл: {file_path}")
-    df = pd.read_excel(file_path, header=None)
+    df = pd.read_excel(file_path, header=None, engine='openpyxl')
 
     file_name = os.path.basename(file_path).replace('.xlsx', '')
-    file_parts = file_name.split('_')
-    agency = file_parts[0].strip()
-    product = ' '.join(file_parts[1:]).split(' ')[0].strip() if len(file_parts) > 1 else ''
+    first_part = file_name.split('_')[0].strip()  # Берём первую часть до символа "_"
+    parts = first_part.split()
+
+    if len(parts) >= 1:
+      agency = parts[0]  # Argus
+    else:
+      agency = ''
+
+    if len(parts) >= 2:
+      product = parts[1]  # Ammonia
+    else:
+      product = ''
 
     publish_date = extract_publish_date(file_name)
     file_name_short = os.path.basename(file_path)
@@ -461,15 +804,20 @@ for file_info in FILES:
         parse_recent_spot_sales(df, final_data, agency, product, publish_date, file_name_short)
     if "Indian NPK arrivals" in tables_to_parse:
         parse_indian_npk_arrivals(df, final_data, agency, product, publish_date, file_name_short)
-
-
+    if "Selected Spot Sales" in tables_to_parse:
+        parse_selected_spot_sales(df, final_data, agency, publish_date, file_name_short)
+    if "India MOP vessel line-up" in tables_to_parse:
+        parse_india_mop_vessel_lineup(df, final_data, agency, product, publish_date, file_name_short)
+    if "Brazil Potash line-up" in tables_to_parse:
+        parse_brazil_potash_lineup(df, final_data, agency, product, publish_date, file_name_short)
 # ======================================
 # Сохраняем результат в Excel
 # ======================================
 columns_order = [
     "Publish Date", "Agency", "Product", "Seller", "Buyer", "Vessel",
     "Volume (t)", "Origin", "Date of arrival", "Discharge port",
-    "Low", "High", "Average", "Incoterm", "Destination", "Grade", "Loading port"
+    "Low", "High", "Average", "Incoterm", "Destination", "Grade", 
+    "Loading port", "Shipment Date", "Charterer", "ETB"
 ]
 
 result_df = pd.DataFrame(final_data, columns=columns_order)
