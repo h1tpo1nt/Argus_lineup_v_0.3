@@ -815,12 +815,12 @@ for file_info in FILES:
 # ======================================
 columns_order = [
     "Publish Date", "Agency", "Product", "Seller", "Buyer", "Vessel",
-    "Volume (t)", "Origin", "Date of arrival", "Discharge port",
-    "Low", "High", "Average", "Incoterm", "Destination", "Grade", 
-    "Loading port", "Shipment Date", "Charterer", "ETB"
+    "Volume (t)", "Origin", "Destination", "Date of arrival", "Shipment Date", 
+    "ETB", "Discharge port", "Loading port", "Low", "High", "Average", "Incoterm", 
+    "Grade", "Charterer"
 ]
 
 result_df = pd.DataFrame(final_data, columns=columns_order)
-output_file = 'processed_final_output.xlsx'
+output_file = 'processed_output.xlsx'
 result_df.to_excel(output_file, index=False)
 print(f"✅ Файл успешно обработан и сохранён как '{output_file}'")
