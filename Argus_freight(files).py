@@ -8,6 +8,10 @@ import os
 # ======================================
 FILES = [
     {
+        "path": "Argus Ammonia _ Russia version (2025-07-03).xlsx",
+        "tables": ["Ammonia freight rates"]
+    },
+    {
         "path": "Argus Nitrogen _ Russia version (2025-07-03).xlsx",
         "tables": ["Dry bulk fertilizer freight assessments"]
     },
@@ -51,6 +55,101 @@ def extract_publish_date(filename):
                 continue
     print(f"[WARNING] Нет даты в названии файла: '{filename}'")
     return ""
+
+# ======================================
+# Парсинг Ammonia freight rates
+# ======================================
+def parse_ammonia_freight_rates(df, final_data, agency, product, publish_date):
+    print("[INFO] Начинаем парсить таблицу 'Ammonia freight rates'...")
+    start_row = -1
+    for i, row in df.iterrows():
+        if any(cell for cell in row if isinstance(cell, str) and "ammonia freight rates" in cell.lower()):
+            start_row = i
+            break
+    if start_row == -1:
+        print("[ERROR] Не найдена таблица 'Ammonia freight rates'")
+        return
+
+    route_col = -1
+    volume_col = -1
+    rate_change_col = -1
+
+    for i in range(start_row + 1, start_row + 5):
+        if i >= len(df): break
+        row = df.iloc[i]
+        for col_idx, cell in enumerate(row):
+            if isinstance(cell, str):
+                cell_clean = cell.strip().lower()
+                if "route" in cell_clean:
+                    route_col = col_idx
+                elif "volume" in cell_clean:
+                    volume_col = col_idx
+                elif "rate change" in cell_clean or "change" in cell_clean:
+                    rate_change_col = col_idx
+        if route_col != -1 and volume_col != -1 and rate_change_col != -1:
+            header_row = i
+            break
+
+    if route_col == -1:
+        print("[ERROR] Не найдена колонка 'Route'")
+        return
+
+    empty_rows = 0
+    for i in range(header_row + 1, len(df)):
+        row = df.iloc[i]
+        if volume_col < len(row) and (pd.isna(row[volume_col]) or str(row[volume_col]).strip() == ""):
+            empty_rows += 1
+            if empty_rows >= 3: break
+            continue
+        empty_rows = 0
+
+        route = str(row[route_col]).strip() if route_col < len(row) and pd.notna(row[route_col]) else ""
+        volume = str(row[volume_col]).strip() if volume_col < len(row) and pd.notna(row[volume_col]) else ""
+        rate_change = str(row[rate_change_col]).strip() if rate_change_col < len(row) and pd.notna(row[rate_change_col]) else ""
+
+        # Разделение Route на Loading / Destination
+        loading = ""
+        destination = ""
+        if route:
+            if " to " in route:
+                parts = route.split(" to ", 1)
+                loading = parts[0].strip()
+                destination = parts[1].strip()
+            else:
+                loading = route.strip()
+
+        # Volume обработка
+        volume_clean = ""
+        if volume:
+            vol = str(volume).strip().replace(' ', '')
+            if any(char.isdigit() for char in vol):
+                if "-" in vol:
+                    parts = re.split(r'[-–—]', vol)
+                    try:
+                        parts = [int(float(p)) for p in parts]
+                        avg = int(sum(parts) / len(parts))
+                        volume_clean = f"{avg}"
+                    except ValueError:
+                        pass
+                else:
+                    digits_only = re.sub(r'[^\d]', '', vol)
+                    if digits_only:
+                        volume_clean = digits_only
+
+        # Rate change обработка
+        rate_change_clean = rate_change if rate_change and rate_change.lower() not in ['n/a', 'nan'] else ""
+
+        final_data.append({
+            "Publish Date": publish_date,
+            "Agency": agency,
+            "Product": product,
+            "Loading": loading,
+            "Destination": destination,
+            "Volume": volume_clean,
+            "Rate Low": "",
+            "Rate High": "",
+            "Rate change": rate_change_clean
+        })
 
 # ======================================
 # Парсинг Dry bulk fertilizer freight assessments
@@ -151,7 +250,8 @@ def parse_dry_bulk_freight(df, final_data, agency, product, publish_date):
             "Destination": destination,
             "Volume": volume_clean,
             "Rate Low": rate_low_clean,
-            "Rate High": rate_high_clean
+            "Rate High": rate_high_clean,
+            "Rate change": ""
         })
 
 # ======================================
@@ -253,7 +353,8 @@ def parse_urea_freight(df, final_data, agency, product, publish_date):
             "Destination": destination,
             "Volume": volume_clean,
             "Rate Low": rate_low_clean,
-            "Rate High": rate_high_clean
+            "Rate High": rate_high_clean,
+            "Rate change": ""
         })
 
 # ======================================
@@ -361,7 +462,8 @@ def parse_phosphate_freight(df, final_data, agency, product, publish_date):
             "Destination": destination,
             "Volume": volume_clean,
             "Rate Low": rate_low_clean,
-            "Rate High": rate_high_clean
+            "Rate High": rate_high_clean,
+            "Rate change": ""
         })
 
 # ======================================
@@ -465,7 +567,8 @@ def parse_potash_freight(df, final_data, agency, product, publish_date):
             "Destination": destination,
             "Volume": volume_clean,
             "Rate Low": rate_low_clean,
-            "Rate High": rate_high_clean
+            "Rate High": rate_high_clean,
+            "Rate change": ""
         })
 
 # ======================================
@@ -489,6 +592,8 @@ for file_info in FILES:
     product = ' '.join(parts[1:]) if len(parts) >= 2 else ''
     publish_date = extract_publish_date(file_name)
 
+    if "Ammonia freight rates" in tables_to_parse:
+        parse_ammonia_freight_rates(df, final_data, agency, product, publish_date)
     if "Dry bulk fertilizer freight assessments" in tables_to_parse:
         parse_dry_bulk_freight(df, final_data, agency, product, publish_date)
     if "Urea freight" in tables_to_parse:
@@ -503,7 +608,8 @@ for file_info in FILES:
 # ======================================
 if final_data:
     columns_order = [
-        "Publish Date", "Agency", "Product", "Loading", "Destination", "Volume", "Rate Low", "Rate High"
+        "Publish Date", "Agency", "Product", "Loading", "Destination", 
+        "Volume", "Rate Low", "Rate High", "Rate change"
     ]
     result_df = pd.DataFrame(final_data, columns=columns_order)
     output_file = 'freight_processed.xlsx'
