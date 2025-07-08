@@ -17,7 +17,8 @@ columns_order = [
 FILES = [
     {
         "path": "/content/Argus NPKs _ Russia version (2025-07-03).xlsx",
-        "tables": ["Latest African NPK tender", "Indian NPK, NPS tenders"]
+        "tables": ["Latest African NPK tender", "Indian NPK, NPS tenders",
+                   "phosphate tenders"]
     }
 ]
 full_month_names = [
@@ -107,18 +108,30 @@ def parse_date(date_str):
         return ""
 
 # ======================================
-# Обработка Vol. OOOt: умножение на 1000
+# Обработка Vol. OOOt: умножение на 1000, с поддержкой диапазонов
 # ======================================
 def process_volume(vol_str):
     if not vol_str:
         return ""
-    cleaned = re.sub(r'[^\d.,]', '', str(vol_str))
-    cleaned = cleaned.replace(',', '.')
+
+    cleaned = str(vol_str).strip()
+
+    # Проверяем, является ли строка диапазоном (например, "100-200", "150 - 250")
+    range_match = re.search(r'^\s*(\d+)\s*[-–]\s*(\d+)\s*$', cleaned)
+    if range_match:
+        low = int(range_match.group(1))
+        high = int(range_match.group(2))
+        avg = (low + high) / 2
+        return str(int(avg * 1000))  # Умножаем на 1000 и округляем
+
+    # Убираем всё, кроме чисел и точки/запятой
+    cleaned = re.sub(r'[^\d.,]', '', cleaned).replace(',', '.')
+
     try:
         volume = float(cleaned)
         return str(int(volume * 1000))
     except ValueError:
-        return ""
+        return vol_str.strip()  # Оставляем как есть, если не распознано
 # ======================================
 # Парсинг Latest African NPK tender
 # ======================================
@@ -260,7 +273,7 @@ def parse_indian_npk_nps_tenders(df, final_data, agency, product, publish_date, 
         
         # Извлечение данных по индексам
         holder = str(row[0]).strip() if len(row) > 0 and not pd.isna(row[0]) else ""
-        product_val = str(row[1]).strip() if len(row) > 1 and not pd.isna(row[1]) else ""
+        product_val = product
         volume_raw = str(row[2]).strip() if len(row) > 2 and not pd.isna(row[2]) else ""
         issue_date = str(row[3]).strip() if len(row) > 3 and not pd.isna(row[3]) else ""
         closing_date = str(row[4]).strip() if len(row) > 4 and not pd.isna(row[4]) else ""
@@ -275,7 +288,7 @@ def parse_indian_npk_nps_tenders(df, final_data, agency, product, publish_date, 
         final_data.append({
             "Publish Date": publish_date,
             "Agency": agency,
-            "Product": product_val,
+            "Product": product,
             "Country": "",
             "Holder": holder,
             "Grade": product_val,
@@ -287,6 +300,113 @@ def parse_indian_npk_nps_tenders(df, final_data, agency, product, publish_date, 
         })
     
     print(f"[INFO] Завершили парсинг Indian NPK, NPS tenders, добавлено записей: {len(final_data)}")
+
+# ======================================
+# Парсинг Shipment с датами внутри текста
+# ======================================
+def parse_shipment_text(text):
+    if not text:
+        return ""
+
+    # Ищем дату в строке (например, "31 July", "15 Aug", "Sep", "Aug")
+    date_match = re.search(r'(\d{1,2})?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*', text, re.IGNORECASE)
+    if date_match:
+        day = date_match.group(1) if date_match.group(1) else '01'
+        month_abbr = date_match.group(2).lower()[:3]
+
+        # Сопоставление месяца
+        month_map = {
+            "jan": "01", "feb": "02", "mar": "03",
+            "apr": "04", "may": "05", "jun": "06",
+            "jul": "07", "aug": "08", "sep": "09",
+            "oct": "10", "nov": "11", "dec": "12"
+        }
+
+        if month_abbr in month_map:
+            # Убираем найденную часть и заменяем на DD.MM
+            replaced_month = f"{day}.{month_map[month_abbr]}"
+            # Убираем оригинал месяца из строки
+            cleaned_text = re.sub(r'\s*(\d{1,2})?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*', '', text, flags=re.IGNORECASE)
+            # Возвращаем остаток строки + новый формат
+            return f"{cleaned_text.strip()} {replaced_month}".strip()
+    
+    return text  # Если не найдено — возвращаем как есть
+# ======================================
+# Парсинг phosphate tenders (без привязки к заголовкам)
+# ======================================
+def parse_phosphate_tenders(df, final_data, agency, product, publish_date, file_name_short):
+    start_parsing = False
+    skip_next_row = False  # Пропустить заголовок
+    empty_count = 0
+    print("[INFO] Начинаем парсить phosphate tenders...")
+
+    for i, row in df.iterrows():
+        first_cell = str(row[0]).strip() if not pd.isna(row[0]) else ""
+
+        # Поиск начала таблицы
+        if re.search(r'.{0,5}phosphate[\s_]+tenders?.{0,5}', first_cell, re.IGNORECASE):
+            start_parsing = True
+            skip_next_row = True  # Пропустить следующую строку (заголовок)
+            continue
+
+        if not start_parsing:
+            continue
+
+        # Проверяем второй столбец (индекс 1)
+        second_cell = str(row[1]).strip() if len(row) > 1 and not pd.isna(row[1]) else ""
+
+        # Если второй столбец пуст, увеличиваем счетчик
+        if not second_cell:
+            empty_count += 1
+            if empty_count >= 3:
+                print(f"[INFO] Обнаружено 3 пустых строки подряд → завершаем парсинг phosphate tenders")
+                break
+            continue
+        else:
+            empty_count = 0  # Сброс счётчика при наличии данных
+
+        # Пропускаем строку с заголовками
+        if skip_next_row:
+            skip_next_row = False
+            continue
+
+        # Извлечение данных по индексам
+        holder_country = str(row[0]).strip() if len(row) > 0 and not pd.isna(row[0]) else ""
+        product_val = str(row[1]).strip() if len(row) > 1 and not pd.isna(row[1]) else ""
+        volume_raw = str(row[2]).strip() if len(row) > 2 and not pd.isna(row[2]) else ""
+        closing_date = str(row[3]).strip() if len(row) > 3 and not pd.isna(row[3]) else ""
+        shipment_raw = str(row[4]).strip() if len(row) > 4 and not pd.isna(row[4]) else ""
+        status = str(row[5]).strip() if len(row) > 5 and not pd.isna(row[5]) else ""
+
+        # Разделение Holder / Country
+        if '/' in holder_country:
+            holder, country = map(str.strip, holder_country.split('/', 1))
+        else:
+            holder = holder_country
+            country = ""
+
+        # Обработка Volume
+        volume = process_volume(volume_raw)
+
+        # Обработка Shipment
+        shipment = parse_shipment_text(shipment_raw)
+
+        # Добавление записи
+        final_data.append({
+            "Publish Date": publish_date,
+            "Agency": agency,
+            "Product": product_val,
+            "Country": country,
+            "Holder": holder,
+            "Grade": product_val,
+            "Volume": volume,
+            "Issue date": "",  # Не заполняется
+            "Closing date": parse_date(closing_date),
+            "Status": status,
+            "Shipment": shipment
+        })
+
+    print(f"[INFO] Завершили парсинг phosphate tenders, добавлено записей: {len(final_data)}")
 # ======================================
 # Основной цикл парсинга
 # ======================================
@@ -307,7 +427,8 @@ for file_info in FILES:
         parse_latest_african_npk_tender(df, final_data, agency, product, publish_date, file_name_short)
     if "Indian NPK, NPS tenders" in tables_to_parse:
         parse_indian_npk_nps_tenders(df, final_data, agency, product, publish_date, file_name_short)
-
+    if "phosphate tenders" in tables_to_parse:
+        parse_phosphate_tenders(df, final_data, agency, product, publish_date, file_name_short)
 # ======================================
 # Сохраняем результат в Excel
 # ======================================
