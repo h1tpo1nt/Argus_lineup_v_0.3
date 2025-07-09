@@ -3,6 +3,9 @@ import re
 from datetime import datetime
 import os
 
+# Define report_date at the beginning
+report_date = datetime.now()
+
 # ======================================
 # Настройки путей и параметров
 # ======================================
@@ -25,18 +28,37 @@ final_data = []
 # Функция извлечения даты публикации из имени файла
 # ======================================
 def extract_publish_date(filename):
-    """Извлекает дату публикации из имени файла в формате YYYY-MM-DD"""
-    date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
-    if date_match:
-        return date_match.group(1)
-    return datetime.now().strftime("%Y-%m-%d")  # Если дата не найдена, используем текущую дату
+    # Ищем дату в имени файла (разные возможные форматы)
+    date_match = re.search(r'(\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4}|\d{2}[A-Za-z]{3}\d{4})', filename)
 
+    if not date_match:
+        return datetime.now().strftime("%d.%m.%Y")  # Если не найдено — текущая дата
+
+    date_str = date_match.group(1)
+
+    try:
+        # Парсим разные форматы
+        if '-' in date_str and len(date_str) == 10:
+            dt = datetime.strptime(date_str, "%Y-%m-%d")
+        elif '.' in date_str and len(date_str.split('.')) == 3:
+            dt = datetime.strptime(date_str, "%d.%m.%Y")
+        elif re.match(r'^\d{2}[A-Za-z]{3}\d{4}$', date_str):  # например: 12Jun2025
+            dt = datetime.strptime(date_str, "%d%b%Y")
+        else:
+            return datetime.now().strftime("%d.%m.%Y")
+
+        return dt.strftime("%d.%m.%Y")
+    except Exception as e:
+        print(f"[WARNING] Не удалось распознать дату из имени файла '{filename}': {e}")
+        return datetime.now().strftime("%d.%m.%Y")
+        
 # ======================================
 # Функция извлечения даты из строки
 # ======================================
 def parse_date(date_str, report_date=None):
-    if not date_str:
+    if not date_str or str(date_str).strip() == "":
         return ""
+
     date_str = str(date_str).strip()
     date_str_lower = date_str.lower()
 
@@ -63,45 +85,20 @@ def parse_date(date_str, report_date=None):
     )
     if not month_match:
         return ""
-
     month_abbr = month_match.group(1)[:3].capitalize()
     month_num = datetime.strptime(month_abbr, "%b").month
 
     # Определяем год
     year_match = re.search(r'\b(20\d{2})\b', date_str)
     if year_match:
-        year = int(year_match.group(1))
+        year = int(year_match.group(1))  # Явно указанный год в строке
     else:
-        # Логика на основе report_date
-        report_month = report_date.month
-        report_year = report_date.year
-
-        if month_num > report_month:
-            # Например: Shipment Dec, а report Jan → прошлый год
-            year = report_year - 1
-        elif month_num < report_month:
-            # Например: Shipment Feb, а report Dec → следующий год
-            year = report_year + 1
-        else:
-            # Месяц совпадает → текущий год
-            year = report_year
+        # Берем год из report_date (publish_date), если не указан явно
+        year = report_date.year
 
     try:
-        # Формат DD MMM → DD.MM.YYYY
         dt = datetime(year=year, month=month_num, day=day)
-
-        # Если дата выглядит как "DD MMM"
-        if re.search(rf'\b{day}\s+{month_abbr}\b', date_str, re.IGNORECASE):
-            return dt.strftime("%d.%m.%Y")
-
-        # Если формат MMM YYYY или MMM DD
-        elif re.search(rf'\b{month_abbr}\s+\d{{1,2}}|\b{month_abbr}\s+\d{{4}}', date_str, re.IGNORECASE):
-            return dt.strftime("%d.%m.%Y")
-
-        # По умолчанию
-        else:
-            return dt.strftime("%d.%m.%Y")
-
+        return dt.strftime("%d.%m.%Y")
     except Exception as e:
         print(f"[WARNING] Ошибка при парсинге даты '{date_str}': {e}")
         return ""
@@ -213,7 +210,7 @@ def parse_indian_imports(df, final_data, agency, product, publish_date, file_nam
                 origin = vol_origin
 
         # Обработка даты и порта разгрузки
-        date_str = parse_date(date_port)
+        date_str = parse_date(date_port, report_date=report_date)
         discharge_port = ""
         if date_port:
             discharge_port = re.sub(
@@ -318,7 +315,7 @@ def parse_spot_sales(df, final_data, agency, product, publish_date, file_name_sh
                 "Vessel": "",
                 "Volume (t)": volume,
                 "Origin": origin_value.strip(),
-                "Date of arrival": parse_date(shipment),
+                "Date of arrival": parse_date(shipment, report_date=report_date),
                 "Discharge port": "",
                 "Low": price_info["Low"],
                 "High": price_info["High"],
@@ -404,7 +401,7 @@ def parse_argus_urea_spot_deals_selection(df, final_data, agency, product, publi
             low, high, average = "", "", ""
 
         # Обработка даты отгрузки
-        shipment_date = parse_date(shipment_raw)
+        shipment_date = parse_date(shipment_raw, report_date=report_date)
 
         # Добавление записи
         final_data.append({
@@ -495,7 +492,7 @@ def parse_argus_ammonium_sulphate_spot_deals_selection(df, final_data, agency, p
             low, high, average = "", "", ""
 
         # Обработка даты отгрузки
-        shipment_date = parse_date(shipment_raw)
+        shipment_date = parse_date(shipment_raw, report_date=report_date)
 
         # Добавление записи
         final_data.append({
@@ -597,13 +594,13 @@ def parse_recent_spot_sales(df, final_data, agency, product, publish_date, file_
             for month in full_month_names:
                 if shipment_lower == month.lower():
                     month_index = full_month_names.index(month) + 1
-                    date_str = f"01.{month_index:02d}"
+                    date_str = f"01.{month_index:02d}.{report_date.year}"
                     break
             if not date_str:
                 for month in full_month_names:
                     if shipment_lower == month[:3].lower():
                         month_index = full_month_names.index(month) + 1
-                        date_str = f"01.{month_index:02d}"
+                        date_str = f"01.{month_index:02d}.{report_date.year}"
                         break
 
         # Добавление записи
@@ -674,7 +671,7 @@ def parse_indian_npk_arrivals(df, final_data, agency, product, publish_date, fil
                 else:
                     loading_port = vol_loading.strip()
 
-            date_str = parse_date(arrival)
+            date_str = parse_date(arrival, report_date=report_date)
 
             final_data.append({
                 "Publish Date": publish_date,
@@ -774,7 +771,7 @@ def parse_selected_spot_sales(df, final_data, agency, publish_date, file_name_sh
                     try:
                         current_year = datetime.now().year
                         dt = datetime.strptime(f"01 {month_str} {current_year}", "%d %b %Y")
-                        shipment_date = dt.strftime("%d.%m")
+                        shipment_date = parse_date(delivery_period, report_date=report_date)
                     except ValueError:
                         pass
 
@@ -856,7 +853,7 @@ def parse_india_mop_vessel_lineup(df, final_data, agency, product, publish_date,
             "Vessel": vessel,
             "Volume (t)": volume,
             "Origin": "",
-            "Date of arrival": parse_date(arrival),
+            "Date of arrival": parse_date(arrival, report_date=report_date),
             "Discharge port": discharge_port,
             "Low": "",
             "High": "",
@@ -943,8 +940,8 @@ def parse_brazil_potash_lineup(df, final_data, agency, product, publish_date, fi
         product_name = str(row[col_map['product']]).strip() if 'product' in col_map and col_map['product'] < len(row) and pd.notna(row[col_map['product']]) else product
         volume = re.sub(r'[^\d]', '', str(row[col_map['volume']])) if 'volume' in col_map and col_map['volume'] < len(row) and pd.notna(row[col_map['volume']]) else ""
         receiver = str(row[col_map['receiver']]).strip() if 'receiver' in col_map and col_map['receiver'] < len(row) and pd.notna(row[col_map['receiver']]) else ""
-        eta_date = parse_date(str(row[col_map['eta']])) if 'eta' in col_map and col_map['eta'] < len(row) and pd.notna(row[col_map['eta']]) else ""
-        etb_date = parse_date(str(row[col_map['etb']])) if 'etb' in col_map and col_map['etb'] < len(row) and pd.notna(row[col_map['etb']]) else ""
+        eta_date = parse_date(str(row[col_map['eta']]), report_date=report_date) if 'eta' in col_map and col_map['eta'] < len(row) and pd.notna(row[col_map['eta']]) else ""
+        etb_date = parse_date(str(row[col_map['etb']]), report_date=report_date) if 'etb' in col_map and col_map['etb'] < len(row) and pd.notna(row[col_map['etb']]) else ""
         
         final_data.append({
             "Publish Date": publish_date,
